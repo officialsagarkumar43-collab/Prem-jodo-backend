@@ -36,7 +36,7 @@ const executeRoomAction = (roomId, actionFn) => {
 
   const previousAction = roomActionQueues.get(rId) || Promise.resolve();
   const nextAction = previousAction
-    .catch(() => {})
+    .catch(() => { })
     .then(() => actionFn());
 
   roomActionQueues.set(rId, nextAction);
@@ -47,7 +47,7 @@ const executeRoomAction = (roomId, actionFn) => {
         roomActionQueues.delete(rId);
       }
     })
-    .catch(() => {});
+    .catch(() => { });
 
   return nextAction;
 };
@@ -229,7 +229,7 @@ export const initializeBattleSocket = (io) => {
 
     const previousPromise = roomPersistenceQueues.get(rId) || Promise.resolve();
     const currentTask = previousPromise
-      .catch(() => {})
+      .catch(() => { })
       .then(async () => {
         // 1. Authoritative MongoDB write first with State Version Guard
         const updateDoc = {
@@ -545,7 +545,7 @@ export const initializeBattleSocket = (io) => {
         setTimeout(() => {
           activeBattleRooms.delete(rId);
           roomPersistenceQueues.delete(rId);
-          CacheService.del(`battle:room:${rId}`).catch(() => {});
+          CacheService.del(`battle:room:${rId}`).catch(() => { });
         }, 5000);
       });
     }
@@ -738,7 +738,7 @@ export const initializeBattleSocket = (io) => {
         .then((players) => {
           socket.emit('battle:online_players', { success: true, players, data: players, count: players.length });
         })
-        .catch(() => {});
+        .catch(() => { });
     };
 
     socket.on('battle:register', handleBattleUserJoin);
@@ -824,7 +824,7 @@ export const initializeBattleSocket = (io) => {
           } catch (matchErr) {
             console.error('❌ Matchmaking Join/Create Error, initiating rollback & requeue:', matchErr);
             if (createdRoomId) {
-              await BattleService.refundAndCancelRoom(createdRoomId, 'automatch_failed').catch(() => {});
+              await BattleService.refundAndCancelRoom(createdRoomId, 'automatch_failed').catch(() => { });
             }
             // Re-queue opponent back to matchmaking queue so search isn't lost
             if (opponent) {
