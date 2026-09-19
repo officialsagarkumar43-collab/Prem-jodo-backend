@@ -4,6 +4,9 @@ import connectDB from './src/config/db.js';
 import { initializeRedis, disconnectRedis } from './src/config/redis.js';
 import { initializeSocket } from './src/sockets/index.js';
 import { ENV } from './src/config/env.js';
+import dns from 'dns';
+
+dns.setDefaultResultOrder('ipv4first');
 
 const server = http.createServer(app);
 
