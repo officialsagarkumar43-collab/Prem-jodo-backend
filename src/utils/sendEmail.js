@@ -6,25 +6,21 @@ import { ENV } from '../config/env.js';
  */
 const createTransporter = () => {
   if (ENV.SMTP_USER && ENV.SMTP_PASS && ENV.SMTP_PASS !== 'your_gmail_app_password') {
-    const isGmail = (ENV.SMTP_HOST && ENV.SMTP_HOST.includes('gmail')) || (ENV.SMTP_USER && ENV.SMTP_USER.includes('@gmail.com'));
-    
-    if (isGmail) {
-      return nodemailer.createTransport({
-        service: 'gmail',
-        auth: {
-          user: ENV.SMTP_USER,
-          pass: ENV.SMTP_PASS.replace(/\s+/g, '') // remove spaces from app password
-        }
-      });
-    }
+    const cleanPass = String(ENV.SMTP_PASS).replace(/\s+/g, '');
+    const port = Number(ENV.SMTP_PORT) || 465;
+    const isPort465 = port === 465;
 
     return nodemailer.createTransport({
       host: ENV.SMTP_HOST || 'smtp.gmail.com',
-      port: Number(ENV.SMTP_PORT) || 465,
-      secure: Number(ENV.SMTP_PORT) === 465 || !ENV.SMTP_PORT, // true for 465
+      port: port,
+      secure: isPort465, // true for 465, false for 587/STARTTLS
+      family: 4, // Crucial for cloud hosts like Render to force IPv4 and prevent ENETUNREACH
       auth: {
         user: ENV.SMTP_USER,
-        pass: ENV.SMTP_PASS
+        pass: cleanPass
+      },
+      tls: {
+        rejectUnauthorized: false
       }
     });
   }
