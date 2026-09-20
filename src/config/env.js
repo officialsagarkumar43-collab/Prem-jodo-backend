@@ -20,6 +20,7 @@ export const ENV = {
   SMTP_PASS: process.env.SMTP_PASS,
   SMTP_FROM: process.env.SMTP_FROM,
   RESEND_API_KEY: process.env.RESEND_API_KEY,
+  BREVO_API_KEY: process.env.BREVO_API_KEY,
 
   // Agora Configuration
   AGORA_APP_ID: process.env.AGORA_APP_ID,

@@ -44,6 +44,41 @@ const createTransporter = () => {
 };
 
 /**
+ * Send OTP Email via Brevo REST API (Free 300 emails/day to ANY recipient without domain verification)
+ */
+const sendViaBrevo = async (email, otp, htmlContent) => {
+  try {
+    const senderEmail = ENV.SMTP_USER || 'officialsagarkumar43@gmail.com';
+    const response = await fetch('https://api.brevo.com/v3/smtp/email', {
+      method: 'POST',
+      headers: {
+        'api-key': ENV.BREVO_API_KEY.trim(),
+        'Content-Type': 'application/json',
+        'Accept': 'application/json'
+      },
+      body: JSON.stringify({
+        sender: { name: 'Prem Jodo', email: senderEmail },
+        to: [{ email: email }],
+        subject: `Your Prem Jodo Verification Code: ${otp}`,
+        htmlContent: htmlContent
+      })
+    });
+
+    const data = await response.json();
+    if (response.ok) {
+      console.log(`✉️ Email sent successfully via Brevo API to ${email} (MessageId: ${data.messageId || 'OK'})`);
+      return true;
+    } else {
+      console.error('❌ Brevo API Error:', data);
+      return false;
+    }
+  } catch (err) {
+    console.error('❌ Brevo API Network Error:', err.message);
+    return false;
+  }
+};
+
+/**
  * Send OTP Email via Resend REST API (HTTP Port 443 - Never blocked on Render/Cloud)
  */
 const sendViaResend = async (email, otp, htmlContent) => {
@@ -126,7 +161,12 @@ export const sendOtpEmail = async (email, otp) => {
     </html>
   `;
 
-  // 1. If Resend API Key is available, use Resend API directly (HTTP Port 443, 100% reliable on Render)
+  // 1. If Brevo API Key is available, use Brevo REST API (Allows ANY recipient without custom domain!)
+  if (ENV.BREVO_API_KEY) {
+    return await sendViaBrevo(email, otp, htmlContent);
+  }
+
+  // 2. If Resend API Key is available, use Resend API directly (HTTP Port 443)
   if (ENV.RESEND_API_KEY) {
     return await sendViaResend(email, otp, htmlContent);
   }
