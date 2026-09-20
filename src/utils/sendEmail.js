@@ -6,10 +6,22 @@ import { ENV } from '../config/env.js';
  */
 const createTransporter = () => {
   if (ENV.SMTP_USER && ENV.SMTP_PASS && ENV.SMTP_PASS !== 'your_gmail_app_password') {
+    const isGmail = (ENV.SMTP_HOST && ENV.SMTP_HOST.includes('gmail')) || (ENV.SMTP_USER && ENV.SMTP_USER.includes('@gmail.com'));
+    
+    if (isGmail) {
+      return nodemailer.createTransport({
+        service: 'gmail',
+        auth: {
+          user: ENV.SMTP_USER,
+          pass: ENV.SMTP_PASS.replace(/\s+/g, '') // remove spaces from app password
+        }
+      });
+    }
+
     return nodemailer.createTransport({
-      host: ENV.SMTP_HOST,
-      port: Number(ENV.SMTP_PORT),
-      secure: Number(ENV.SMTP_PORT) === 465, // true for 465, false for other ports (587)
+      host: ENV.SMTP_HOST || 'smtp.gmail.com',
+      port: Number(ENV.SMTP_PORT) || 465,
+      secure: Number(ENV.SMTP_PORT) === 465 || !ENV.SMTP_PORT, // true for 465
       auth: {
         user: ENV.SMTP_USER,
         pass: ENV.SMTP_PASS
