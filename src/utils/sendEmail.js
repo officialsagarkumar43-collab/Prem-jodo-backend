@@ -48,11 +48,12 @@ const createTransporter = () => {
  */
 const sendViaBrevo = async (email, otp, htmlContent) => {
   try {
+    const cleanApiKey = (ENV.BREVO_API_KEY || '').trim().replace(/^["',]+|["',]+$/g, '');
     const senderEmail = ENV.SMTP_USER || 'officialsagarkumar43@gmail.com';
     const response = await fetch('https://api.brevo.com/v3/smtp/email', {
       method: 'POST',
       headers: {
-        'api-key': ENV.BREVO_API_KEY.trim(),
+        'api-key': cleanApiKey,
         'Content-Type': 'application/json',
         'Accept': 'application/json'
       },
