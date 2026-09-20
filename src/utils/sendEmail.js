@@ -1,20 +1,30 @@
+import dns from 'dns';
 import nodemailer from 'nodemailer';
 import { ENV } from '../config/env.js';
+
+// Custom DNS lookup handler to strictly resolve IPv4 on cloud environments like Render
+const ipv4Lookup = (hostname, options, callback) => {
+  return dns.lookup(hostname, { family: 4 }, callback);
+};
+
+let cachedTransporter = null;
 
 /**
  * Configure Nodemailer Transporter
  */
 const createTransporter = () => {
-  if (ENV.SMTP_USER && ENV.SMTP_PASS && ENV.SMTP_PASS !== 'your_gmail_app_password') {
+  if (cachedTransporter) return cachedTransporter;
+
+  if (ENV.SMTP_USER && ENV.SMTP_PASS) {
     const cleanPass = String(ENV.SMTP_PASS).replace(/\s+/g, '');
     const port = Number(ENV.SMTP_PORT) || 465;
     const isPort465 = port === 465;
 
-    return nodemailer.createTransport({
+    cachedTransporter = nodemailer.createTransport({
       host: ENV.SMTP_HOST || 'smtp.gmail.com',
       port: port,
       secure: isPort465, // true for 465, false for 587/STARTTLS
-      family: 4, // Crucial for cloud hosts like Render to force IPv4 and prevent ENETUNREACH
+      lookup: ipv4Lookup, // Strictly force IPv4 DNS resolution (bypasses Render IPv6 ENETUNREACH)
       auth: {
         user: ENV.SMTP_USER,
         pass: cleanPass
@@ -23,6 +33,8 @@ const createTransporter = () => {
         rejectUnauthorized: false
       }
     });
+
+    return cachedTransporter;
   }
   return null;
 };
