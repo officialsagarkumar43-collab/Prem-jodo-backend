@@ -32,7 +32,6 @@ class PaymentService {
           key_secret: keySecret
         });
         this.initialized = true;
-        console.log(`✅ Razorpay Payment Gateway initialized with Key ID: [${keyId.slice(0, 8)}...]`);
       } catch (err) {
         console.error('❌ Failed to instantiate Razorpay client:', err.message);
         this.initialized = false;

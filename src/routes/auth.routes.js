@@ -5,10 +5,12 @@ import {
   googleLogin,
   completeOnboarding,
   logoutUser,
-  getCurrentUser
+  getCurrentUser,
+  uploadFaceVerification
 } from '../controllers/auth.controller.js';
 import { verifyJWT } from '../middlewares/auth.middleware.js';
 import { validate } from '../middlewares/validate.middleware.js';
+import { uploadSingleImage, uploadProfileMedia } from '../middlewares/upload.middleware.js';
 import {
   sendOtpSchema,
   verifyOtpSchema,
@@ -24,7 +26,19 @@ router.post('/verify-otp', validate(verifyOtpSchema), verifyOtp);
 router.post('/google', validate(googleLoginSchema), googleLogin);
 
 // Protected routes
-router.post('/onboarding', verifyJWT, validate(onboardingSchema), completeOnboarding);
+router.post(
+  '/face-verification',
+  verifyJWT,
+  uploadSingleImage('face-verification', 'image'),
+  uploadFaceVerification
+);
+router.post(
+  '/onboarding',
+  verifyJWT,
+  uploadProfileMedia('profiles'),
+  validate(onboardingSchema),
+  completeOnboarding
+);
 router.post('/logout', verifyJWT, logoutUser);
 router.get('/me', verifyJWT, getCurrentUser);
 

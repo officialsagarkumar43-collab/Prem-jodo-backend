@@ -18,19 +18,23 @@ export const onboardingSchema = z.object({
     fullName: z.string().min(1, 'Full name is required'),
     gender: z.string().min(1, 'Gender is required'),
     birthday: z
-      .object({
-        month: z.number().optional(),
-        day: z.number().optional(),
-        year: z.number().optional()
-      })
+      .union([
+        z.string(),
+        z.object({
+          month: z.union([z.number(), z.string()]).optional(),
+          day: z.union([z.number(), z.string()]).optional(),
+          year: z.union([z.number(), z.string()]).optional()
+        })
+      ])
       .optional(),
-    showGenderOnProfile: z.boolean().optional(),
+    dateOfBirth: z.union([z.string(), z.date()]).optional(),
+    showGenderOnProfile: z.union([z.boolean(), z.string()]).optional(),
     interestedIn: z.union([z.array(z.string()), z.string()]).optional(),
-    interests: z.array(z.string()).optional(),
+    interests: z.union([z.array(z.string()), z.string()]).optional(),
     lookingFor: z.string().optional(),
     religion: z.string().optional(),
     education: z.string().optional(),
-    photos: z.array(z.any()).optional(),
+    photos: z.union([z.array(z.any()), z.string()]).optional(),
     bio: z.string().optional(),
     aboutMe: z.string().optional()
   })
@@ -45,7 +49,6 @@ export const googleLoginSchema = z.object({
       token: z.string().optional(),
       fullName: z.string().optional(),
       photo: z.string().optional(),
-      avatar: z.string().optional(),
       googleId: z.string().optional()
     })
     .refine((data) => data.email || data.idToken || data.credential || data.token, {

@@ -108,7 +108,6 @@ export class BattleService {
           _id: mongoose.isValidObjectId(strippedId) ? strippedId : new mongoose.Types.ObjectId(),
           fullName: name,
           email: fallbackEmail,
-          avatar,
           isOnboarded: true,
           isVerified: true
         });

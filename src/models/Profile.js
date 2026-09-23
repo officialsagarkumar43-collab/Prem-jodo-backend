@@ -50,6 +50,10 @@ const profileSchema = new mongoose.Schema(
         publicId: { type: String }
       }
     ],
+    faceVerification: {
+      type: String,
+      default: ''
+    },
     // Location with GeoJSON Point for nearby matchmaking
     location: {
       type: {

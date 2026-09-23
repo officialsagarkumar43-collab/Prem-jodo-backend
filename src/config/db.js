@@ -19,7 +19,6 @@ const connectDB = async (retryCount = 0) => {
       serverSelectionTimeoutMS: 8000
     });
 
-    console.log(`\n🍃 MongoDB Connected! DB HOST: ${connectionInstance.connection.host}`);
     console.log(`🍃 Connected to Database: ${connectionInstance.connection.name}`);
   } catch (error) {
     console.error(`MongoDB Connection Error (Attempt ${retryCount + 1}/${maxRetries}):`, error.message);

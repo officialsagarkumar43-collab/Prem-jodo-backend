@@ -43,6 +43,10 @@ const userSchema = new mongoose.Schema(
       type: Boolean,
       default: false
     },
+    isFaceVerification: {
+      type: Boolean,
+      default: false
+    },
     isActive: {
       type: Boolean,
       default: true
@@ -51,10 +55,6 @@ const userSchema = new mongoose.Schema(
       type: String,
       sparse: true,
       index: true
-    },
-    avatar: {
-      type: String,
-      default: ''
     },
     subscription: {
       plan: {

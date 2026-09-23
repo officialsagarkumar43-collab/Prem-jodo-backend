@@ -58,7 +58,6 @@ export const initializeRedis = () => {
     redisClient.on('ready', () => {
       isReady = true;
       hasLoggedConnectionError = false;
-      console.log(`🚀 Redis Client Connected successfully on ${ENV.REDIS_URL || `${ENV.REDIS_HOST}:${ENV.REDIS_PORT}`}`);
     });
 
     redisClient.on('error', (err) => {

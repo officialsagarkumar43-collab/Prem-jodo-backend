@@ -92,8 +92,6 @@ export const initializeSocket = (server, clientUrl) => {
   });
 
   io.on("connection", (socket) => {
-    console.log("⚡ Socket connected: " + socket.id);
-
     const handleUserJoin = async (userId) => {
       const strUserId = parseUserId(userId);
       if (!strUserId) return;
@@ -105,7 +103,7 @@ export const initializeSocket = (server, clientUrl) => {
       }
       onlineUsers.get(strUserId).add(socket.id);
 
-      await CacheService.sadd("online_users", strUserId).catch(() => {});
+      await CacheService.sadd("online_users", strUserId).catch(() => { });
 
       io.emit("user_online", { userId: strUserId, status: "online" });
       const cleanUsers = Array.from(onlineUsers.keys()).filter(id => id && id !== "[object Object]");
@@ -181,7 +179,7 @@ export const initializeSocket = (server, clientUrl) => {
           await Message.updateMany(
             { conversation: cleanConv, sender: { $ne: cleanReader } },
             { $set: { status: "read", isRead: true, read: true } }
-          ).catch(() => {});
+          ).catch(() => { });
         }
 
         const payload = { conversationId: cleanConv || conversationId, readerId: cleanReader };
@@ -343,7 +341,7 @@ export const initializeSocket = (server, clientUrl) => {
           });
         });
 
-        await Promise.all(invalidationPromises).catch(() => {});
+        await Promise.all(invalidationPromises).catch(() => { });
         console.log("💬 [Socket Live Message Broadcasted] From: " + fromUserId + " (" + senderName + ") -> To: " + Array.from(participantSet).join(", ") + ", Conv: " + convStr);
 
         if (typeof callback === "function") {
@@ -436,11 +434,11 @@ export const initializeSocket = (server, clientUrl) => {
           sockets.delete(socket.id);
           if (sockets.size === 0) {
             onlineUsers.delete(userId);
-            await CacheService.srem("online_users", userId).catch(() => {});
+            await CacheService.srem("online_users", userId).catch(() => { });
             const offlineTime = new Date();
             const isoTime = offlineTime.toISOString();
             io.emit("user_offline", { userId, status: "offline", lastSeen: isoTime, timestamp: isoTime });
-            try { User.findByIdAndUpdate(userId, { lastActive: offlineTime }).exec().catch(() => {}); } catch (err) {}
+            try { User.findByIdAndUpdate(userId, { lastActive: offlineTime }).exec().catch(() => { }); } catch (err) { }
           }
         }
       }

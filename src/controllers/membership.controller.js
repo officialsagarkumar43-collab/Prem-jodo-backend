@@ -657,7 +657,7 @@ export const handleRazorpayWebhook = asyncHandler(async (req, res) => {
     const orderEntity = eventData.order?.entity || {};
     const orderId = paymentEntity.order_id || orderEntity.id || payload.order_id;
     const rzpPaymentId = paymentEntity.id || payload.payment_id;
-    const paymentMethod = paymentEntity.method || 'Razorpay';
+    const paymentMethod = paymentEntity.method;
 
     if (orderId) {
       const payment = await Payment.findOne({
