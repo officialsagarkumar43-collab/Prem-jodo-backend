@@ -1,9 +1,10 @@
 import multer from 'multer';
 import path from 'path';
 import fs from 'fs';
-import sharp from 'sharp';
 import { ApiError } from '../utils/ApiError.js';
 import { HTTP_STATUS } from '../constants/index.js';
+import { imageOptimizer } from '../utils/imageOptimizer.js';
+
 
 // Allowed image MIME types
 const ALLOWED_MIME_TYPES = [
@@ -66,21 +67,13 @@ const generateFilename = (userId, fieldName, index = null) => {
 };
 
 /**
- * Optimize an image buffer with sharp and write to disk as .webp
+ * Optimize an image buffer with sharp and write to disk
  */
 const processAndSaveImage = async (buffer, outputFilePath, options = {}) => {
-  const { maxWidth = 1920, maxHeight = 1920, quality = 80 } = options;
-
-  return await sharp(buffer)
-    .rotate() // Automatically orient based on EXIF
-    .resize({
-      width: maxWidth,
-      height: maxHeight,
-      fit: 'inside',
-      withoutEnlargement: true
-    })
-    .webp({ quality, effort: 4 })
-    .toFile(outputFilePath);
+  return await imageOptimizer(buffer, {
+    ...options,
+    outputPath: outputFilePath
+  });
 };
 
 /**
@@ -95,7 +88,11 @@ const parseFormDataJsonFields = (body) => {
     'photos',
     'existingPhotos',
     'location',
-    'partnerPreferences'
+    'partnerPreferences',
+    'order',
+    'photoOrder',
+    'sortOrder',
+    'orders'
   ];
 
   for (const field of jsonFields) {
@@ -110,6 +107,11 @@ const parseFormDataJsonFields = (body) => {
         } catch {
           // Keep as raw string if JSON.parse fails
         }
+      } else if (trimmed.includes(',') && (field === 'order' || field === 'photoOrder' || field === 'sortOrder' || field === 'orders')) {
+        body[field] = trimmed.split(',').map((item) => {
+          const val = item.trim();
+          return !isNaN(val) ? Number(val) : val;
+        });
       }
     }
   }

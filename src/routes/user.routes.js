@@ -5,6 +5,7 @@ import {
   getLookingForOptions,
   getInterestOptions,
   uploadPhotos,
+  reorderPhotos,
   deletePhoto
 } from '../controllers/user.controller.js';
 import { uploadFaceVerification } from '../controllers/auth.controller.js';
@@ -12,8 +13,7 @@ import { verifyJWT } from '../middlewares/auth.middleware.js';
 import { cacheResponse } from '../middlewares/cache.middleware.js';
 import {
   uploadSingleImage,
-  uploadMultipleImages,
-  uploadProfileMedia
+  uploadMultipleImages
 } from '../middlewares/upload.middleware.js';
 
 const router = Router();
@@ -27,12 +27,13 @@ router.use(verifyJWT);
 
 router
   .route('/profile')
-  .post(uploadProfileMedia('profiles'), upsertProfile)
-  .put(uploadProfileMedia('profiles'), upsertProfile);
+  .post(upsertProfile)
+  .put(upsertProfile);
 router.route('/profile/:userId').get(getProfileById);
 
-// Photo upload & deletion endpoints with Sharp image optimization
+// Photo upload, reordering & deletion endpoints with Sharp image optimization
 router.post('/photos', uploadMultipleImages('photos', 'photos', 6), uploadPhotos);
+router.put('/photos/reorder', reorderPhotos);
 router.delete('/photos', deletePhoto);
 
 // Face verification endpoint alias under /users as well

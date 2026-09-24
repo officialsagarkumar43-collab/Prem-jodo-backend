@@ -12,23 +12,11 @@ import {
   INTEREST_OPTIONS
 } from '../constants/index.js';
 
-// Helper to extract relative path from full URLs (e.g. http://localhost:5000/uploads/... -> /uploads/...)
-const normalizePhotoUrl = (rawUrl) => {
-  if (!rawUrl || typeof rawUrl !== 'string') return '';
-  try {
-    if (rawUrl.startsWith('http://') || rawUrl.startsWith('https://')) {
-      const parsed = new URL(rawUrl);
-      return parsed.pathname;
-    }
-  } catch {
-    // Ignore URL parse error
-  }
-  return rawUrl.trim();
-};
+
 
 export const upsertProfile = asyncHandler(async (req, res) => {
   const userId = req.user._id;
-  const { fullName, birthday, dateOfBirth, photos, existingPhotos, ...restData } = req.body;
+  const { fullName, birthday, dateOfBirth, photos, ...restData } = req.body;
 
   // Parse Date of Birth if birthday object is provided
   let parsedDob = dateOfBirth;
@@ -36,103 +24,10 @@ export const upsertProfile = asyncHandler(async (req, res) => {
     parsedDob = new Date(birthday.year, birthday.month - 1, birthday.day);
   }
 
-  // Retrieve existing profile from DB
-  const existingProfile = await Profile.findOne({ user: userId });
-  const oldDbPhotos = existingProfile?.photos || [];
-
-  // Determine photos array (preserving exact arrival order if sent via multipart req.orderedPhotos)
-  let finalPhotos = [];
-
-  if (Array.isArray(req.orderedPhotos) && req.orderedPhotos.length > 0) {
-    // Exact arrival sequence from client
-    finalPhotos = req.orderedPhotos
-      .map((item, idx) => {
-        const rawUrl = item.fileUrl || item.url;
-        const cleanUrl = normalizePhotoUrl(rawUrl);
-        return {
-          url: cleanUrl,
-          isPrimary: item.isPrimary !== undefined ? Boolean(item.isPrimary) : idx === 0,
-          publicId: item.publicId
-        };
-      })
-      .filter((p) => Boolean(p.url));
-  } else {
-    // Fallback if req.orderedPhotos was not populated
-    let retainedPhotos = [];
-    const rawExistingInput = existingPhotos !== undefined ? existingPhotos : photos;
-
-    if (rawExistingInput !== undefined) {
-      let parsedList = [];
-      if (Array.isArray(rawExistingInput)) {
-        parsedList = rawExistingInput;
-      } else if (typeof rawExistingInput === 'string' && rawExistingInput.trim()) {
-        try {
-          const parsed = JSON.parse(rawExistingInput);
-          if (Array.isArray(parsed)) parsedList = parsed;
-        } catch {
-          parsedList = [{ url: rawExistingInput, isPrimary: true }];
-        }
-      }
-
-      retainedPhotos = parsedList.map((p, idx) => {
-        if (typeof p === 'string') {
-          return { url: normalizePhotoUrl(p), isPrimary: idx === 0 };
-        }
-        return {
-          url: normalizePhotoUrl(p?.url || p?.fileUrl),
-          isPrimary: Boolean(p?.isPrimary),
-          publicId: p?.publicId
-        };
-      }).filter((p) => Boolean(p.url));
-    } else if (!req.files || req.files.length === 0) {
-      // Neither new files nor photo inputs provided: keep existing photos in DB
-      retainedPhotos = oldDbPhotos.map((p) => ({
-        url: normalizePhotoUrl(p.url),
-        isPrimary: Boolean(p.isPrimary),
-        publicId: p.publicId
-      }));
-    }
-
-    const newUploadedPhotos = (Array.isArray(req.files) ? req.files : []).map((f, idx) => ({
-      url: normalizePhotoUrl(f.fileUrl),
-      isPrimary: retainedPhotos.length === 0 && idx === 0
-    }));
-
-    finalPhotos = [...retainedPhotos, ...newUploadedPhotos];
-  }
-
-  // Deduplicate by URL while preserving the first-seen order
-  const uniquePhotos = [];
-  const seenUrls = new Set();
-  for (const p of finalPhotos) {
-    if (p.url && !seenUrls.has(p.url)) {
-      seenUrls.add(p.url);
-      uniquePhotos.push(p);
-    }
-  }
-  finalPhotos = uniquePhotos;
-
-  // Ensure at least one photo is marked primary if photos exist
-  if (finalPhotos.length > 0 && !finalPhotos.some((p) => p.isPrimary)) {
-    finalPhotos[0].isPrimary = true;
-  }
-
-  // Physical file cleanup: delete photos from disk that were in DB but are not in finalPhotos
-  const finalUrlSet = new Set(finalPhotos.map((p) => p.url));
-  for (const oldP of oldDbPhotos) {
-    const cleanOldUrl = normalizePhotoUrl(oldP.url);
-    if (cleanOldUrl && !finalUrlSet.has(cleanOldUrl)) {
-      deleteUploadedFile(cleanOldUrl).catch((err) => {
-        console.warn(`[upsertProfile] Failed to delete removed photo ${cleanOldUrl}:`, err.message);
-      });
-    }
-  }
-
   const profilePayload = {
     ...restData,
     ...(birthday ? { birthday } : {}),
     ...(parsedDob ? { dateOfBirth: parsedDob } : {}),
-    photos: finalPhotos,
     user: userId
   };
 
@@ -195,10 +90,53 @@ export const uploadPhotos = asyncHandler(async (req, res) => {
     throw new ApiError(HTTP_STATUS.BAD_REQUEST, 'Please upload at least one image file');
   }
 
-  const newPhotos = req.files.map((file) => ({
+  // Parse order from req.body if provided (e.g. order: [2, 0, 1] or order: "2,0,1")
+  let order = req.body.order ?? req.body.photoOrder ?? req.body.sortOrder ?? req.body.orders;
+  if (typeof order === 'string') {
+    try {
+      order = JSON.parse(order);
+    } catch {
+      if (order.includes(',')) {
+        order = order.split(',').map((x) => x.trim());
+      } else if (!isNaN(order)) {
+        order = [Number(order)];
+      }
+    }
+  }
+
+  // Primary image preferences
+  const primaryIndex = req.body.primaryIndex !== undefined ? Number(req.body.primaryIndex) : -1;
+  const setAsPrimary = req.body.isPrimary === true || req.body.isPrimary === 'true';
+
+  let newPhotos = req.files.map((file, idx) => ({
     url: file.fileUrl,
-    isPrimary: false
+    isPrimary: primaryIndex === idx || (setAsPrimary && idx === 0)
   }));
+
+  // If order array of indices is provided, sort newPhotos accordingly
+  if (Array.isArray(order) && order.length > 0) {
+    if (order.every((x) => typeof x === 'number' || (!isNaN(x) && typeof x === 'string'))) {
+      const numericOrder = order.map(Number);
+      const orderedNewPhotos = [];
+      const usedIndices = new Set();
+
+      for (const idx of numericOrder) {
+        if (idx >= 0 && idx < newPhotos.length && !usedIndices.has(idx)) {
+          orderedNewPhotos.push(newPhotos[idx]);
+          usedIndices.add(idx);
+        }
+      }
+
+      // Append any unmentioned uploaded photos in their original order
+      newPhotos.forEach((photo, idx) => {
+        if (!usedIndices.has(idx)) {
+          orderedNewPhotos.push(photo);
+        }
+      });
+
+      newPhotos = orderedNewPhotos;
+    }
+  }
 
   const profile = await Profile.findOneAndUpdate(
     { user: userId },
@@ -208,9 +146,16 @@ export const uploadPhotos = asyncHandler(async (req, res) => {
     { new: true, upsert: true }
   );
 
-  if (profile.photos.length > 0 && !profile.photos.some((p) => p.isPrimary)) {
+  // If primary was set on a new photo, reset existing photos primary flag
+  if (newPhotos.some((p) => p.isPrimary)) {
+    const primaryUrl = newPhotos.find((p) => p.isPrimary).url;
+    profile.photos.forEach((p) => {
+      p.isPrimary = p.url === primaryUrl;
+    });
+    await profile.save({ validateBeforeSave: false });
+  } else if (profile.photos.length > 0 && !profile.photos.some((p) => p.isPrimary)) {
     profile.photos[0].isPrimary = true;
-    await profile.save();
+    await profile.save({ validateBeforeSave: false });
   }
 
   await CacheService.del(`profile:${userId.toString()}`);
@@ -219,8 +164,89 @@ export const uploadPhotos = asyncHandler(async (req, res) => {
     new ApiResponse(
       HTTP_STATUS.OK,
       { profile, addedPhotos: newPhotos },
-      'Photos uploaded and optimized successfully'
+      'Photos uploaded and sorted successfully'
     )
+  );
+});
+
+export const reorderPhotos = asyncHandler(async (req, res) => {
+  const userId = req.user._id;
+  const { photoIds, photoUrls, photos } = req.body;
+
+  const profile = await Profile.findOne({ user: userId });
+  if (!profile) {
+    throw new ApiError(HTTP_STATUS.NOT_FOUND, 'Profile not found');
+  }
+
+  if (Array.isArray(photos) && photos.length > 0) {
+    const existingMap = new Map(profile.photos.map((p) => [p._id.toString(), p]));
+    const urlMap = new Map(profile.photos.map((p) => [p.url, p]));
+
+    const reordered = [];
+    for (const item of photos) {
+      const match =
+        (item._id && existingMap.get(item._id.toString())) ||
+        (item.photoId && existingMap.get(item.photoId.toString())) ||
+        (item.url && urlMap.get(item.url));
+
+      if (match) {
+        if (item.isPrimary !== undefined) {
+          match.isPrimary = Boolean(item.isPrimary);
+        }
+        reordered.push(match);
+      }
+    }
+
+    if (reordered.length > 0) {
+      for (const p of profile.photos) {
+        if (!reordered.some((r) => r._id.toString() === p._id.toString())) {
+          reordered.push(p);
+        }
+      }
+      profile.photos = reordered;
+    }
+  } else if (Array.isArray(photoIds) && photoIds.length > 0) {
+    const idMap = new Map(profile.photos.map((p) => [p._id.toString(), p]));
+    const reordered = [];
+    for (const id of photoIds) {
+      if (idMap.has(id.toString())) {
+        reordered.push(idMap.get(id.toString()));
+      }
+    }
+    for (const p of profile.photos) {
+      if (!reordered.some((r) => r._id.toString() === p._id.toString())) {
+        reordered.push(p);
+      }
+    }
+    profile.photos = reordered;
+  } else if (Array.isArray(photoUrls) && photoUrls.length > 0) {
+    const urlMap = new Map(profile.photos.map((p) => [p.url, p]));
+    const reordered = [];
+    for (const url of photoUrls) {
+      if (urlMap.has(url)) {
+        reordered.push(urlMap.get(url));
+      }
+    }
+    for (const p of profile.photos) {
+      if (!reordered.some((r) => r.url === p.url)) {
+        reordered.push(p);
+      }
+    }
+    profile.photos = reordered;
+  } else {
+    throw new ApiError(HTTP_STATUS.BAD_REQUEST, 'photoIds, photoUrls, or photos array is required for reordering');
+  }
+
+  // Ensure at least one photo is primary
+  if (profile.photos.length > 0 && !profile.photos.some((p) => p.isPrimary)) {
+    profile.photos[0].isPrimary = true;
+  }
+
+  await profile.save({ validateBeforeSave: false });
+  await CacheService.del(`profile:${userId.toString()}`);
+
+  return res.status(HTTP_STATUS.OK).json(
+    new ApiResponse(HTTP_STATUS.OK, { profile }, 'Photos reordered successfully')
   );
 });
 

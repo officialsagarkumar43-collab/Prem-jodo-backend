@@ -108,7 +108,6 @@ export const initializeSocket = (server, clientUrl) => {
       io.emit("user_online", { userId: strUserId, status: "online" });
       const cleanUsers = Array.from(onlineUsers.keys()).filter(id => id && id !== "[object Object]");
       socket.emit("online_users", cleanUsers);
-      console.log("🟢 User " + strUserId + " joined personal room. Total online: " + onlineUsers.size);
     };
 
     socket.on("setup", handleUserJoin);
@@ -126,7 +125,6 @@ export const initializeSocket = (server, clientUrl) => {
       const cleanRoom = parseUserId(room) || strRoom.replace(/^conv_/, "");
       socket.join(strRoom);
       if (cleanRoom && cleanRoom !== strRoom) socket.join(cleanRoom);
-      console.log("💬 Socket " + socket.id + " joined room: " + strRoom + " / " + cleanRoom);
     };
 
     socket.on("join_chat", handleJoinChat);

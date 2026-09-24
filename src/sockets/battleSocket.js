@@ -731,8 +731,6 @@ export const initializeBattleSocket = (io) => {
         }
       }
 
-      console.log(`⚔️ [Battle Socket Registered] User: ${cleanId} joined rooms (Socket ID: ${socket.id})`);
-
       // Send live online players list strictly once
       BattleService.getOnlinePlayers(cleanId)
         .then((players) => {
