@@ -4,7 +4,11 @@ import fs from 'fs';
 import { ApiError } from '../utils/ApiError.js';
 import { HTTP_STATUS } from '../constants/index.js';
 import { imageOptimizer } from '../utils/imageOptimizer.js';
-
+import {
+  isCloudinaryConfigured,
+  uploadBufferToCloudinary,
+  deleteFromCloudinary
+} from '../config/cloudinary.js';
 
 // Allowed image MIME types
 const ALLOWED_MIME_TYPES = [
@@ -17,7 +21,7 @@ const ALLOWED_MIME_TYPES = [
   'image/heif'
 ];
 
-// Memory storage keeps the buffer in RAM so sharp can optimize before saving to disk
+// Memory storage keeps the buffer in RAM so sharp can optimize before saving/uploading
 const memoryStorage = multer.memoryStorage();
 
 const fileFilter = (req, file, cb) => {
@@ -43,7 +47,7 @@ const multerInstance = multer({
 });
 
 /**
- * Ensure the target directory exists under uploads/<folderPath>
+ * Ensure local fallback upload directory exists
  */
 const ensureUploadDir = (folderPath) => {
   const sanitizedFolder = folderPath.replace(/^(\.\.(\/|\\|$))+/, '');
@@ -67,13 +71,54 @@ const generateFilename = (userId, fieldName, index = null) => {
 };
 
 /**
- * Optimize an image buffer with sharp and write to disk
+ * Helper to process, optimize and save/upload an image to Cloudinary (or local disk fallback)
  */
-const processAndSaveImage = async (buffer, outputFilePath, options = {}) => {
-  return await imageOptimizer(buffer, {
+const saveOrUploadImage = async (buffer, folderPath, filename, options = {}) => {
+  // 1. Optimize image buffer with Sharp
+  const optimized = await imageOptimizer(buffer, {
     ...options,
-    outputPath: outputFilePath
+    format: options.format || 'webp'
   });
+
+  const filenameWithoutExt = filename.replace(/\.[^/.]+$/, '');
+  const sanitizedFolder = folderPath.replace(/^(\.\.(\/|\\|$))+/, '');
+
+  // 2. If Cloudinary credentials are configured, upload to Cloudinary
+  if (isCloudinaryConfigured()) {
+    const cloudinaryRes = await uploadBufferToCloudinary(optimized.buffer, {
+      folder: `premjodo/${sanitizedFolder}`,
+      public_id: filenameWithoutExt,
+      format: 'webp'
+    });
+
+    return {
+      fileUrl: cloudinaryRes.secure_url,
+      path: cloudinaryRes.secure_url,
+      publicId: cloudinaryRes.public_id,
+      destination: `cloudinary:premjodo/${sanitizedFolder}`,
+      filename: filename,
+      size: cloudinaryRes.bytes || optimized.size,
+      width: cloudinaryRes.width || optimized.width,
+      height: cloudinaryRes.height || optimized.height,
+      mimetype: 'image/webp'
+    };
+  }
+
+  // 3. Fallback: Save to local disk
+  const { dirPath } = ensureUploadDir(folderPath);
+  const outputPath = path.join(dirPath, filename);
+  await fs.promises.writeFile(outputPath, optimized.buffer);
+
+  return {
+    fileUrl: `/uploads/${sanitizedFolder}/${filename}`,
+    path: outputPath,
+    destination: dirPath,
+    filename: filename,
+    size: optimized.size,
+    width: optimized.width,
+    height: optimized.height,
+    mimetype: 'image/webp'
+  };
 };
 
 /**
@@ -153,31 +198,22 @@ export const uploadSingleImage = (folderPath, fieldName = 'image', options = {})
       }
 
       try {
-        const { dirPath, sanitizedFolder } = ensureUploadDir(folderPath);
         const userId = req.user?._id || req.body?.userId || 'user';
         const filename = generateFilename(userId, fieldName);
-        const outputPath = path.join(dirPath, filename);
 
-        const info = await processAndSaveImage(uploadedFile.buffer, outputPath, options);
+        const savedInfo = await saveOrUploadImage(uploadedFile.buffer, folderPath, filename, options);
 
         // Standardize file info on req.file
         req.file = {
           fieldname: uploadedFile.fieldname,
           originalname: uploadedFile.originalname,
           encoding: uploadedFile.encoding,
-          mimetype: 'image/webp',
-          size: info.size,
-          width: info.width,
-          height: info.height,
-          filename: filename,
-          path: outputPath,
-          destination: dirPath,
-          fileUrl: `/uploads/${sanitizedFolder}/${filename}`
+          ...savedInfo
         };
 
         next();
-      } catch (sharpErr) {
-        return next(new ApiError(HTTP_STATUS.INTERNAL_SERVER_ERROR, `Image optimization failed: ${sharpErr.message}`));
+      } catch (uploadErr) {
+        return next(new ApiError(HTTP_STATUS.INTERNAL_SERVER_ERROR, `Image upload failed: ${uploadErr.message}`));
       }
     });
   };
@@ -236,28 +272,18 @@ export const uploadMultipleImages = (folderPath, fieldName = 'photos', maxCount 
       }
 
       try {
-        const { dirPath, sanitizedFolder } = ensureUploadDir(folderPath);
         const userId = req.user?._id || req.body?.userId || 'user';
 
         const processedFiles = await Promise.all(
           uniqueFiles.map(async (file, index) => {
             const filename = generateFilename(userId, fieldName, index);
-            const outputPath = path.join(dirPath, filename);
-
-            const info = await processAndSaveImage(file.buffer, outputPath, options);
+            const savedInfo = await saveOrUploadImage(file.buffer, folderPath, filename, options);
 
             return {
               fieldname: file.fieldname,
               originalname: file.originalname,
               encoding: file.encoding,
-              mimetype: 'image/webp',
-              size: info.size,
-              width: info.width,
-              height: info.height,
-              filename: filename,
-              path: outputPath,
-              destination: dirPath,
-              fileUrl: `/uploads/${sanitizedFolder}/${filename}`
+              ...savedInfo
             };
           })
         );
@@ -265,8 +291,8 @@ export const uploadMultipleImages = (folderPath, fieldName = 'photos', maxCount 
         req.files = processedFiles;
         req.file = processedFiles[0];
         next();
-      } catch (sharpErr) {
-        return next(new ApiError(HTTP_STATUS.INTERNAL_SERVER_ERROR, `Image optimization failed: ${sharpErr.message}`));
+      } catch (uploadErr) {
+        return next(new ApiError(HTTP_STATUS.INTERNAL_SERVER_ERROR, `Image upload failed: ${uploadErr.message}`));
       }
     });
   };
@@ -434,24 +460,15 @@ export const uploadProfileMedia = (folderPath = 'profiles', maxPhotos = 6, optio
           }
 
           try {
-            const { dirPath, sanitizedFolder } = ensureUploadDir(folderPath);
             const userId = req.user?._id || body?.userId || 'user';
             const filename = generateFilename(userId, 'photos', currentIdx);
-            const outputPath = path.join(dirPath, filename);
 
-            const sharpInfo = await processAndSaveImage(buffer, outputPath, options);
+            const savedInfo = await saveOrUploadImage(buffer, folderPath, filename, options);
 
             const fileObj = {
               fieldname: name,
               originalname: originalFilename || filename,
-              mimetype: 'image/webp',
-              size: sharpInfo.size,
-              width: sharpInfo.width,
-              height: sharpInfo.height,
-              filename: filename,
-              path: outputPath,
-              destination: dirPath,
-              fileUrl: `/uploads/${sanitizedFolder}/${filename}`
+              ...savedInfo
             };
 
             resolve({
@@ -459,11 +476,11 @@ export const uploadProfileMedia = (folderPath = 'profiles', maxPhotos = 6, optio
               fileUrl: fileObj.fileUrl,
               fileObj
             });
-          } catch (sharpErr) {
+          } catch (uploadErr) {
             reject(
               new ApiError(
                 HTTP_STATUS.INTERNAL_SERVER_ERROR,
-                `Image optimization failed: ${sharpErr.message}`
+                `Image upload failed: ${uploadErr.message}`
               )
             );
           }
@@ -517,15 +534,20 @@ export const uploadProfileMedia = (folderPath = 'profiles', maxPhotos = 6, optio
 };
 
 /**
- * Safely delete an uploaded file from disk by relative URL or file path
- * @param {string} fileUrlOrPath - e.g. '/uploads/face-verification/userId-123.webp' or 'uploads/...'
+ * Safely delete an uploaded file (from Cloudinary if cloud URL, or disk if local path)
+ * @param {string} fileUrlOrPath - e.g. 'https://res.cloudinary.com/...' or '/uploads/profiles/123.webp'
  * @returns {Promise<boolean>} - true if deleted or didn't exist, false on failure
  */
 export const deleteUploadedFile = async (fileUrlOrPath) => {
   if (!fileUrlOrPath || typeof fileUrlOrPath !== 'string') return false;
 
   try {
-    // Strip leading slashes, backslashes, and query params
+    // If it is a Cloudinary URL
+    if (fileUrlOrPath.includes('cloudinary.com')) {
+      return await deleteFromCloudinary(fileUrlOrPath);
+    }
+
+    // Local file deletion fallback
     const cleanUrl = fileUrlOrPath.split('?')[0].replace(/^[\/\\]+/, '');
     const isWindowsAbsolutePath = /^[a-zA-Z]:[\\/]/.test(fileUrlOrPath);
     const fullPath = isWindowsAbsolutePath

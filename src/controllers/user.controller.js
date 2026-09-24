@@ -281,7 +281,7 @@ export const deletePhoto = asyncHandler(async (req, res) => {
 
   await profile.save();
 
-  // Delete file from disk
+  // Delete file from disk 
   if (targetPhoto.url) {
     await deleteUploadedFile(targetPhoto.url);
   }
