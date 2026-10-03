@@ -115,11 +115,31 @@ export const getOrCreateConversation = asyncHandler(async (req, res) => {
   );
 });
 
+const formatMessage = (m) => {
+  const msgObj = m && typeof m.toObject === 'function' ? m.toObject() : (m || {});
+  return {
+    ...msgObj,
+    senderId: msgObj.sender?._id || msgObj.sender,
+    text: msgObj.content || '',
+    message: msgObj.content || ''
+  };
+};
+
 export const getConversations = asyncHandler(async (req, res) => {
   const userId = req.user._id;
-  const cacheKey = `conversations:${userId}`;
+  const page = Math.max(1, parseInt(req.query.page, 10) || 1);
+  const limit = Math.max(1, parseInt(req.query.limit, 10) || 15);
+  const skip = (page - 1) * limit;
 
-  const enrichedConversations = await CacheService.remember(cacheKey, 30, async () => {
+  const cacheKey = `conversations:${userId}:${page}:${limit}`;
+
+  const result = await CacheService.remember(cacheKey, 30, async () => {
+    const totalConversations = await Conversation.countDocuments({
+      participants: { $in: [userId] }
+    });
+
+    const totalPages = Math.ceil(totalConversations / limit) || (totalConversations === 0 ? 0 : 1);
+
     const conversations = await Conversation.find({
       participants: { $in: [userId] }
     })
@@ -128,14 +148,35 @@ export const getConversations = asyncHandler(async (req, res) => {
         path: 'lastMessage',
         populate: { path: 'sender', select: 'fullName email' }
       })
-      .sort({ updatedAt: -1 });
+      .sort({ updatedAt: -1 })
+      .skip(skip)
+      .limit(limit);
+
+    if (!conversations.length) {
+      return {
+        conversations: [],
+        pagination: {
+          page,
+          limit,
+          total: totalConversations,
+          totalConversations,
+          totalPages,
+          hasMore: page < totalPages,
+          hasNextPage: page < totalPages,
+          hasPrevPage: page > 1
+        }
+      };
+    }
 
     // Extract all partner IDs to populate their profiles with pictures
     const partnerUserIds = [];
+    const conversationIds = [];
     conversations.forEach((conv) => {
+      conversationIds.push(conv._id);
       conv.participants.forEach((p) => {
-        if (p._id.toString() !== userId.toString()) {
-          partnerUserIds.push(p._id);
+        const pId = p._id ? p._id.toString() : p.toString();
+        if (pId !== userId.toString()) {
+          partnerUserIds.push(pId);
         }
       });
     });
@@ -147,49 +188,102 @@ export const getConversations = asyncHandler(async (req, res) => {
 
     const profileMap = new Map();
     profiles.forEach((p) => {
-      profileMap.set(p.user._id.toString(), p);
+      if (p.user?._id) {
+        profileMap.set(p.user._id.toString(), p);
+      }
     });
 
-    // Calculate unread counts and attach partner profile
-    return await Promise.all(
-      conversations.map(async (conv) => {
-        const partner = conv.participants.find(
-          (p) => p._id.toString() !== userId.toString()
-        );
-        const partnerProfile = partner ? profileMap.get(partner._id.toString()) || null : null;
+    // Fetch all messages for these conversations in one batch
+    const allMessages = await Message.find({
+      conversation: { $in: conversationIds }
+    })
+      .populate('sender', 'fullName email')
+      .sort({ createdAt: 1 });
 
-        const unreadCount = await Message.countDocuments({
-          conversation: conv._id,
+    const messageMap = new Map();
+    allMessages.forEach((m) => {
+      const convIdStr = m.conversation.toString();
+      if (!messageMap.has(convIdStr)) {
+        messageMap.set(convIdStr, []);
+      }
+      messageMap.get(convIdStr).push(formatMessage(m));
+    });
+
+    // Calculate unread counts per conversation in batch
+    const unreadCounts = await Message.aggregate([
+      {
+        $match: {
+          conversation: { $in: conversationIds },
           sender: { $ne: userId },
           isRead: false
-        });
+        }
+      },
+      {
+        $group: {
+          _id: '$conversation',
+          count: { $sum: 1 }
+        }
+      }
+    ]);
 
-        return {
-          _id: conv._id,
-          id: conv._id,
-          participants: conv.participants,
-          lastMessage: conv.lastMessage,
-          partner,
-          partnerProfile,
-          unreadCount,
-          createdAt: conv.createdAt,
-          updatedAt: conv.updatedAt
-        };
-      })
-    );
+    const unreadMap = new Map();
+    unreadCounts.forEach((u) => {
+      unreadMap.set(u._id.toString(), u.count);
+    });
+
+    // Attach partner profile, messages, and unread counts
+    const enrichedConversations = conversations.map((conv) => {
+      const partner = conv.participants.find(
+        (p) => (p._id ? p._id.toString() : p.toString()) !== userId.toString()
+      );
+      const partnerProfile = partner
+        ? profileMap.get(partner._id ? partner._id.toString() : partner.toString()) || null
+        : null;
+
+      const unreadCount = unreadMap.get(conv._id.toString()) || 0;
+      const conversationMessages = messageMap.get(conv._id.toString()) || [];
+
+      return {
+        _id: conv._id,
+        id: conv._id,
+        participants: conv.participants,
+        lastMessage: conv.lastMessage,
+        partner,
+        partnerProfile,
+        unreadCount,
+        messages: conversationMessages,
+        createdAt: conv.createdAt,
+        updatedAt: conv.updatedAt
+      };
+    });
+
+    return {
+      conversations: enrichedConversations,
+      pagination: {
+        page,
+        limit,
+        total: totalConversations,
+        totalConversations,
+        totalPages,
+        hasMore: page < totalPages,
+        hasNextPage: page < totalPages,
+        hasPrevPage: page > 1
+      }
+    };
   });
 
   return res.status(HTTP_STATUS.OK).json(
-    new ApiResponse(HTTP_STATUS.OK, enrichedConversations, 'Conversations retrieved successfully')
+    new ApiResponse(HTTP_STATUS.OK, result, 'Conversations retrieved successfully')
   );
 });
-
 
 export const getMessages = asyncHandler(async (req, res) => {
   const userId = req.user._id;
   const { conversationId } = req.params;
+  const page = Math.max(1, parseInt(req.query.page, 10) || 1);
+  const limit = req.query.limit !== undefined ? Math.max(1, parseInt(req.query.limit, 10)) : 0;
 
-  const cacheKey = `messages:${conversationId}`;
+  const cacheKey = `messages:${conversationId}:${page}:${limit}`;
 
   const formattedMessages = await CacheService.remember(cacheKey, 60, async () => {
     // 1. Gather all related conversation IDs and partner IDs
@@ -246,20 +340,19 @@ export const getMessages = asyncHandler(async (req, res) => {
       ]
     };
 
-    const messages = await Message.find(messageQuery)
+    let query = Message.find(messageQuery)
       .populate('sender', 'fullName email')
       .sort({ createdAt: 1 });
 
+    if (limit > 0) {
+      const skip = (page - 1) * limit;
+      query = query.skip(skip).limit(limit);
+    }
+
+    const messages = await query;
+
     // Format with all standard aliases (content, text, message, senderId) for frontend compatibility
-    return messages.map((m) => {
-      const msgObj = m.toObject();
-      return {
-        ...msgObj,
-        senderId: msgObj.sender?._id || msgObj.sender,
-        text: msgObj.content || '',
-        message: msgObj.content || ''
-      };
-    });
+    return messages.map(formatMessage);
   });
 
   return res.status(HTTP_STATUS.OK).json(
@@ -322,12 +415,17 @@ export const sendMessage = asyncHandler(async (req, res) => {
   // 2. Emit to each participant's personal room for runtime UI updates (chat list, badges, recent chats)
   const invalidationPromises = [
     CacheService.del(`messages:${conversation._id.toString()}`),
-    CacheService.del(`messages:${conversationId?.toString()}`)
+    CacheService.delByPattern(`messages:${conversation._id.toString()}*`),
+    CacheService.del(`messages:${conversationId?.toString()}`),
+    CacheService.delByPattern(`messages:${conversationId?.toString()}*`)
   ];
 
   conversation.participants.forEach((participantId) => {
     const pIdStr = participantId.toString();
-    invalidationPromises.push(CacheService.del(`conversations:${pIdStr}`));
+    invalidationPromises.push(
+      CacheService.del(`conversations:${pIdStr}`),
+      CacheService.delByPattern(`conversations:${pIdStr}*`)
+    );
     emitToUser(pIdStr, 'message_received', formattedMessage);
     emitToUser(pIdStr, 'new_message', formattedMessage);
     emitToUser(pIdStr, 'conversation_updated', {
@@ -373,8 +471,11 @@ export const markMessagesAsRead = asyncHandler(async (req, res) => {
   // Invalidate caches in Redis/Memory
   await Promise.all([
     CacheService.del(`messages:${actualConversationId.toString()}`),
+    CacheService.delByPattern(`messages:${actualConversationId.toString()}*`),
     CacheService.del(`messages:${conversationId?.toString()}`),
-    CacheService.del(`conversations:${userId.toString()}`)
+    CacheService.delByPattern(`messages:${conversationId?.toString()}*`),
+    CacheService.del(`conversations:${userId.toString()}`),
+    CacheService.delByPattern(`conversations:${userId.toString()}*`)
   ]);
 
 
@@ -464,8 +565,11 @@ export const clearConversationMessages = asyncHandler(async (req, res) => {
 
     await Promise.all([
       CacheService.del(`messages:${actualConversationId.toString()}`),
+      CacheService.delByPattern(`messages:${actualConversationId.toString()}*`),
       CacheService.del(`messages:${conversationId.toString()}`),
-      CacheService.del(`conversations:${userId.toString()}`)
+      CacheService.delByPattern(`messages:${conversationId.toString()}*`),
+      CacheService.del(`conversations:${userId.toString()}`),
+      CacheService.delByPattern(`conversations:${userId.toString()}*`)
     ]);
 
     emitToRoom(actualConversationId.toString(), 'messages_cleared', {

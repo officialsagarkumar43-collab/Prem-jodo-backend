@@ -298,7 +298,9 @@ export const initializeSocket = (server, clientUrl) => {
 
         const invalidationPromises = [
           CacheService.del("messages:" + convStr),
-          CacheService.del("messages:" + targetConvId)
+          CacheService.delByPattern("messages:" + convStr + "*"),
+          CacheService.del("messages:" + targetConvId),
+          CacheService.delByPattern("messages:" + targetConvId + "*")
         ];
 
         const participantSet = new Set();
@@ -312,7 +314,10 @@ export const initializeSocket = (server, clientUrl) => {
         if (fromUserId) participantSet.add(fromUserId);
 
         participantSet.forEach((pIdStr) => {
-          invalidationPromises.push(CacheService.del("conversations:" + pIdStr));
+          invalidationPromises.push(
+            CacheService.del("conversations:" + pIdStr),
+            CacheService.delByPattern("conversations:" + pIdStr + "*")
+          );
           emitToUser(pIdStr, "message_received", formattedMessage);
           emitToUser(pIdStr, "new_message", formattedMessage);
           emitToUser(pIdStr, "new_match", {

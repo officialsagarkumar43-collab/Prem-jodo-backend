@@ -125,11 +125,15 @@ export const swipeUser = asyncHandler(async (req, res) => {
     });
   }
 
-  // Invalidate feed and match list caches for both users in Redis/Memory
+  // Invalidate feed, match list, and conversation caches for both users in Redis/Memory
   await Promise.all([
     CacheService.delByPattern(`feed:${senderId}:*`),
     CacheService.del(`matches:${senderId}`),
-    CacheService.del(`matches:${receiverId}`)
+    CacheService.del(`matches:${receiverId}`),
+    CacheService.del(`conversations:${senderId}`),
+    CacheService.delByPattern(`conversations:${senderId}*`),
+    CacheService.del(`conversations:${receiverId}`),
+    CacheService.delByPattern(`conversations:${receiverId}*`)
   ]);
 
   return res.status(HTTP_STATUS.OK).json(
