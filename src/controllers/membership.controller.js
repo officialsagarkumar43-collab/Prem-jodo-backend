@@ -3,6 +3,7 @@ import { User } from '../models/User.js';
 import { Profile } from '../models/Profile.js';
 import { Payment } from '../models/Payment.js';
 import { Plan } from '../models/Plan.js';
+import { Addon } from '../models/Addon.js';
 import { ApiError } from '../utils/ApiError.js';
 import { ApiResponse } from '../utils/ApiResponse.js';
 import { asyncHandler } from '../utils/asyncHandler.js';
@@ -13,12 +14,15 @@ import {
   PAYMENT_STATUS,
   REFUND_POLICY,
   DEFAULT_PLANS_SEED,
+  ADDON_TYPES,
+  DEFAULT_ADDONS_SEED,
   HTTP_STATUS
 } from '../constants/index.js';
 import { ENV } from '../config/env.js';
 import { emitToUser } from '../sockets/index.js';
 import { CacheService } from '../services/cache.service.js';
 import { paymentService } from '../services/payment.service.js';
+import { checkAndRefillUserQuotas } from '../services/subscriptionSweeper.service.js';
 
 /**
  * Helper to ensure default plans are seeded into MongoDB if collection is empty
@@ -27,6 +31,16 @@ const ensureInitialPlansSeeded = async () => {
   const count = await Plan.countDocuments();
   if (count === 0) {
     await Plan.insertMany(DEFAULT_PLANS_SEED);
+  }
+};
+
+/**
+ * Helper to ensure default addons are seeded into MongoDB if collection is empty
+ */
+const ensureInitialAddonsSeeded = async () => {
+  const count = await Addon.countDocuments();
+  if (count === 0) {
+    await Addon.insertMany(DEFAULT_ADDONS_SEED);
   }
 };
 
@@ -43,6 +57,18 @@ const findPlanByReference = async (planRef) => {
 };
 
 /**
+ * Helper to find an addon by ID or Slug
+ */
+const findAddonByReference = async (addonRef) => {
+  if (!addonRef) return null;
+  if (mongoose.isValidObjectId(addonRef)) {
+    const addon = await Addon.findById(addonRef);
+    if (addon) return addon;
+  }
+  return await Addon.findOne({ slug: addonRef.toString().toLowerCase().trim() });
+};
+
+/**
  * Helper to generate a 10-digit unique numeric order number
  */
 export const generate10DigitOrderNumber = () => {
@@ -54,19 +80,23 @@ export const generate10DigitOrderNumber = () => {
 // ==========================================
 
 /**
- * 1. Get all Active Membership Plans Catalog
+ * 1. Get all Active Membership Plans Catalog (and Addons)
  * Public endpoint
  */
 export const getMembershipPlans = asyncHandler(async (req, res) => {
-  await ensureInitialPlansSeeded();
+  await Promise.all([ensureInitialPlansSeeded(), ensureInitialAddonsSeeded()]);
 
-  const plans = await Plan.find({ isActive: true }).sort({ displayOrder: 1, createdAt: 1 });
+  const [plans, addons] = await Promise.all([
+    Plan.find({ isActive: true }).sort({ displayOrder: 1, createdAt: 1 }),
+    Addon.find({ isActive: true }).sort({ displayOrder: 1, createdAt: 1 })
+  ]);
 
   return res.status(HTTP_STATUS.OK).json(
     new ApiResponse(
       HTTP_STATUS.OK,
       {
         plans,
+        addons,
         refundPolicy: {
           maxRefundDays: REFUND_POLICY.MAX_REFUND_DAYS,
           maxRefundHours: REFUND_POLICY.MAX_REFUND_HOURS,
@@ -86,6 +116,27 @@ export const getMembershipPlans = asyncHandler(async (req, res) => {
         ]
       },
       'Membership plans retrieved successfully'
+    )
+  );
+});
+
+/**
+ * 1b. Get all Active Add-ons Catalog (Super Likes & Boosts)
+ * Public endpoint
+ */
+export const getMembershipAddons = asyncHandler(async (req, res) => {
+  await ensureInitialAddonsSeeded();
+
+  const addons = await Addon.find({ isActive: true }).sort({ displayOrder: 1, createdAt: 1 });
+
+  return res.status(HTTP_STATUS.OK).json(
+    new ApiResponse(
+      HTTP_STATUS.OK,
+      {
+        addons,
+        types: ADDON_TYPES
+      },
+      'Membership addons retrieved successfully'
     )
   );
 });
@@ -119,7 +170,25 @@ export const getMySubscription = asyncHandler(async (req, res) => {
         messageBeforeMatch: false,
         vipBadge: false
       };
+      user.subscription.boostsRemaining = 0;
+      user.subscription.planBoostsRemaining = 0;
+      user.subscription.addonBoostsRemaining = 0;
+      user.subscription.superLikesRemaining = 0;
+      user.subscription.planSuperLikesRemaining = 0;
+      user.subscription.addonSuperLikesRemaining = 0;
       await user.save();
+
+      // Clear boosted profile state on membership expiration
+      await Profile.findOneAndUpdate(
+        { user: userId },
+        { $set: { isBoosted: false, boostExpiresAt: null } }
+      );
+    } else {
+      // Check for weekly superlikes (7 days) and monthly profile boost (30 days) refill on-demand
+      const isRefilled = checkAndRefillUserQuotas(user);
+      if (isRefilled) {
+        await user.save();
+      }
     }
   }
 
@@ -151,13 +220,17 @@ export const getMySubscription = asyncHandler(async (req, res) => {
 });
 
 /**
- * 3. Create Razorpay Payment Order
+ * 3. Create Razorpay Payment Order (Plans or Add-ons)
  * Protected endpoint
  */
 export const createMembershipOrder = asyncHandler(async (req, res) => {
   const userId = req.user._id;
   const {
+    type = 'subscription',
     plan: planRef,
+    addon: addonRef,
+    addonId,
+    addonSlug,
     billingCycle = BILLING_CYCLES.MONTHLY,
     paymentMethod = 'Razorpay',
     customerPhone,
@@ -165,10 +238,215 @@ export const createMembershipOrder = asyncHandler(async (req, res) => {
     customerEmail
   } = req.body;
 
+  // User details for Razorpay checkout prefill
+  const userPhone = customerPhone || req.user.phoneNumber || '';
+  const userName = customerName || req.user.fullName || 'Prem Jodo User';
+  const userEmail = customerEmail || req.user.email || '';
+
+  const isAddonOrder =
+    type?.toLowerCase() === 'addon' ||
+    type?.toLowerCase() === 'addons' ||
+    Boolean(addonRef || addonId || addonSlug);
+
+  // ----------------------------------------------------
+  // Branch A: Explicit Add-on Order
+  // ----------------------------------------------------
+  if (isAddonOrder) {
+    await ensureInitialAddonsSeeded();
+    const targetAddonRef = addonRef || addonSlug || addonId || planRef;
+    const addonDoc = await findAddonByReference(targetAddonRef);
+    if (!addonDoc || !addonDoc.isActive) {
+      throw new ApiError(HTTP_STATUS.BAD_REQUEST, `Invalid or inactive addon: ${targetAddonRef}`);
+    }
+
+    const amountInRupees = addonDoc.price;
+    const amountInPaise = Math.round(amountInRupees * 100);
+    const orderNumber = generate10DigitOrderNumber();
+    const receipt = `pj_add_${orderNumber}`.slice(0, 40);
+    const orderNote = `Prem Jodo Addon: ${addonDoc.name}`;
+
+    const rzpOrderResult = await paymentService.createOrder({
+      orderAmount: amountInRupees,
+      orderCurrency: 'INR',
+      receipt,
+      notes: {
+        userId: userId.toString(),
+        userEmail,
+        type: 'addon',
+        addonSlug: addonDoc.slug,
+        addonName: addonDoc.name,
+        addonType: addonDoc.type,
+        quantity: addonDoc.quantity,
+        orderNumber,
+        description: orderNote
+      }
+    });
+
+    const payment = await Payment.create({
+      user: userId,
+      orderId: rzpOrderResult.orderId,
+      razorpayOrderId: rzpOrderResult.orderId,
+      orderNumber,
+      paymentMethod,
+      amount: amountInRupees,
+      amountInPaise,
+      currency: 'INR',
+      type: 'addon',
+      plan: addonDoc.slug,
+      addon: addonDoc._id,
+      addonDetails: {
+        slug: addonDoc.slug,
+        name: addonDoc.name,
+        type: addonDoc.type,
+        quantity: addonDoc.quantity,
+        durationMinutes: addonDoc.durationMinutes || 0,
+        price: addonDoc.price
+      },
+      billingCycle: 'one_time',
+      status: PAYMENT_STATUS.CREATED,
+      receipt,
+      notes: {
+        userEmail,
+        type: 'addon',
+        addonName: addonDoc.name,
+        addonId: addonDoc._id.toString(),
+        addonSlug: addonDoc.slug,
+        orderNumber,
+        paymentMethod
+      }
+    });
+
+    return res.status(HTTP_STATUS.CREATED).json(
+      new ApiResponse(
+        HTTP_STATUS.CREATED,
+        {
+          orderId: rzpOrderResult.orderId,
+          razorpayOrderId: rzpOrderResult.orderId,
+          keyId: paymentService.keyId || ENV.RAZORPAY_KEY_ID,
+          orderNumber,
+          paymentMethod,
+          amount: amountInRupees,
+          amountInPaise,
+          currency: 'INR',
+          type: 'addon',
+          addon: addonDoc.slug,
+          addonId: addonDoc._id,
+          addonName: addonDoc.name,
+          addonType: addonDoc.type,
+          quantity: addonDoc.quantity,
+          receipt,
+          paymentId: payment._id,
+          user: {
+            name: userName,
+            email: userEmail,
+            contact: userPhone
+          }
+        },
+        'Razorpay addon order created successfully'
+      )
+    );
+  }
+
+  // ----------------------------------------------------
+  // Branch B: Subscription Plan Order (with Addon fallback)
+  // ----------------------------------------------------
   await ensureInitialPlansSeeded();
 
-  const planDoc = await findPlanByReference(planRef);
-  if (!planDoc || !planDoc.isActive) {
+  let planDoc = await findPlanByReference(planRef);
+
+  // Fallback: If planRef doesn't match a Plan, check if it matches an Addon!
+  if (!planDoc) {
+    await ensureInitialAddonsSeeded();
+    const fallbackAddon = await findAddonByReference(planRef);
+    if (fallbackAddon && fallbackAddon.isActive) {
+      const amountInRupees = fallbackAddon.price;
+      const amountInPaise = Math.round(amountInRupees * 100);
+      const orderNumber = generate10DigitOrderNumber();
+      const receipt = `pj_add_${orderNumber}`.slice(0, 40);
+      const orderNote = `Prem Jodo Addon: ${fallbackAddon.name}`;
+
+      const rzpOrderResult = await paymentService.createOrder({
+        orderAmount: amountInRupees,
+        orderCurrency: 'INR',
+        receipt,
+        notes: {
+          userId: userId.toString(),
+          userEmail,
+          type: 'addon',
+          addonSlug: fallbackAddon.slug,
+          addonName: fallbackAddon.name,
+          addonType: fallbackAddon.type,
+          quantity: fallbackAddon.quantity,
+          orderNumber,
+          description: orderNote
+        }
+      });
+
+      const payment = await Payment.create({
+        user: userId,
+        orderId: rzpOrderResult.orderId,
+        razorpayOrderId: rzpOrderResult.orderId,
+        orderNumber,
+        paymentMethod,
+        amount: amountInRupees,
+        amountInPaise,
+        currency: 'INR',
+        type: 'addon',
+        plan: fallbackAddon.slug,
+        addon: fallbackAddon._id,
+        addonDetails: {
+          slug: fallbackAddon.slug,
+          name: fallbackAddon.name,
+          type: fallbackAddon.type,
+          quantity: fallbackAddon.quantity,
+          durationMinutes: fallbackAddon.durationMinutes || 0,
+          price: fallbackAddon.price
+        },
+        billingCycle: 'one_time',
+        status: PAYMENT_STATUS.CREATED,
+        receipt,
+        notes: {
+          userEmail,
+          type: 'addon',
+          addonName: fallbackAddon.name,
+          addonId: fallbackAddon._id.toString(),
+          addonSlug: fallbackAddon.slug,
+          orderNumber,
+          paymentMethod
+        }
+      });
+
+      return res.status(HTTP_STATUS.CREATED).json(
+        new ApiResponse(
+          HTTP_STATUS.CREATED,
+          {
+            orderId: rzpOrderResult.orderId,
+            razorpayOrderId: rzpOrderResult.orderId,
+            keyId: paymentService.keyId || ENV.RAZORPAY_KEY_ID,
+            orderNumber,
+            paymentMethod,
+            amount: amountInRupees,
+            amountInPaise,
+            currency: 'INR',
+            type: 'addon',
+            addon: fallbackAddon.slug,
+            addonId: fallbackAddon._id,
+            addonName: fallbackAddon.name,
+            addonType: fallbackAddon.type,
+            quantity: fallbackAddon.quantity,
+            receipt,
+            paymentId: payment._id,
+            user: {
+              name: userName,
+              email: userEmail,
+              contact: userPhone
+            }
+          },
+          'Razorpay addon order created successfully'
+        )
+      );
+    }
+
     throw new ApiError(HTTP_STATUS.BAD_REQUEST, `Invalid or inactive plan: ${planRef}`);
   }
 
@@ -182,11 +460,6 @@ export const createMembershipOrder = asyncHandler(async (req, res) => {
   const orderNumber = generate10DigitOrderNumber();
   const receipt = `pj_${orderNumber}`.slice(0, 40);
 
-  // User details for Razorpay checkout prefill
-  const userPhone = customerPhone || req.user.phoneNumber || '';
-  const userName = customerName || req.user.fullName || 'Prem Jodo User';
-  const userEmail = customerEmail || req.user.email || '';
-
   const orderNote = `Prem Jodo ${planDoc.name} (${billingCycle})`;
 
   // Call dedicated PaymentService (Razorpay)
@@ -197,6 +470,7 @@ export const createMembershipOrder = asyncHandler(async (req, res) => {
     notes: {
       userId: userId.toString(),
       userEmail,
+      type: 'subscription',
       planSlug: planDoc.slug,
       planName: planDoc.name,
       billingCycle,
@@ -215,12 +489,14 @@ export const createMembershipOrder = asyncHandler(async (req, res) => {
     amount: amountInRupees,
     amountInPaise,
     currency: 'INR',
+    type: 'subscription',
     plan: planDoc.slug,
     billingCycle,
     status: PAYMENT_STATUS.CREATED,
     receipt,
     notes: {
       userEmail,
+      type: 'subscription',
       planName: planDoc.name,
       planId: planDoc._id.toString(),
       orderNumber,
@@ -240,6 +516,7 @@ export const createMembershipOrder = asyncHandler(async (req, res) => {
         amount: amountInRupees,
         amountInPaise,
         currency: 'INR',
+        type: 'subscription',
         plan: planDoc.slug,
         planId: planDoc._id,
         planName: planDoc.name,
@@ -362,6 +639,102 @@ export const verifyMembershipPayment = asyncHandler(async (req, res) => {
   const actualPaymentId = paymentId || rzpPayment?.id || `pay_${orderId}_${Date.now()}`;
   const actualPaymentMethod = rzpPayment?.method || payment.paymentMethod || 'Razorpay';
 
+  // Check if this payment is for an Add-on
+  const isAddonPayment =
+    payment.type === 'addon' ||
+    Boolean(payment.addon) ||
+    payment.notes?.type === 'addon';
+
+  if (isAddonPayment) {
+    const addonDoc = await findAddonByReference(
+      payment.addon || payment.notes?.addonSlug || payment.plan
+    );
+    const addonType =
+      addonDoc?.type ||
+      payment.addonDetails?.type ||
+      (payment.plan?.includes('boost') ? ADDON_TYPES.PROFILE_BOOST : ADDON_TYPES.SUPER_LIKES);
+    const quantity = addonDoc?.quantity || payment.addonDetails?.quantity || 1;
+
+    const incQuery = {};
+    if (addonType === ADDON_TYPES.PROFILE_BOOST || addonType === 'profile_boost') {
+      incQuery['subscription.boostsRemaining'] = quantity;
+      incQuery['subscription.addonBoostsRemaining'] = quantity;
+    } else {
+      incQuery['subscription.superLikesRemaining'] = quantity;
+      incQuery['subscription.addonSuperLikesRemaining'] = quantity;
+    }
+
+    // Update Payment record
+    payment.status = PAYMENT_STATUS.CAPTURED;
+    payment.paymentId = actualPaymentId;
+    payment.razorpayPaymentId = actualPaymentId;
+    payment.razorpayOrderId = orderId;
+    if (signature) {
+      payment.signature = signature;
+      payment.razorpaySignature = signature;
+    }
+    payment.paymentMethod = actualPaymentMethod;
+    await payment.save();
+
+    // Update User Model with additional credits
+    const updatedUser = await User.findByIdAndUpdate(
+      userId,
+      { $inc: incQuery },
+      { new: true }
+    ).select('-password -refreshToken');
+
+    // Invalidate Redis Caches
+    const uStr = userId.toString();
+    await Promise.all([
+      CacheService.del(`user:${uStr}`),
+      CacheService.del(`profile:${uStr}`),
+      CacheService.delByPattern(`feed:*`)
+    ]);
+
+    // Real-time socket event emission to client
+    emitToUser(uStr, 'addon_purchased', {
+      type: 'addon',
+      addon: addonDoc || payment.addonDetails,
+      addonType,
+      quantityAdded: quantity,
+      boostsRemaining: updatedUser?.subscription?.boostsRemaining || 0,
+      superLikesRemaining: updatedUser?.subscription?.superLikesRemaining || 0,
+      timestamp: new Date().toISOString()
+    });
+
+    emitToUser(uStr, 'membership_updated', {
+      subscription: updatedUser?.subscription,
+      membership: updatedUser?.subscription,
+      timestamp: new Date().toISOString()
+    });
+
+    return res.status(HTTP_STATUS.OK).json(
+      new ApiResponse(
+        HTTP_STATUS.OK,
+        {
+          type: 'addon',
+          user: updatedUser,
+          subscription: updatedUser?.subscription,
+          boostsRemaining: updatedUser?.subscription?.boostsRemaining || 0,
+          superLikesRemaining: updatedUser?.subscription?.superLikesRemaining || 0,
+          addon: addonDoc || payment.addonDetails,
+          quantityAdded: quantity,
+          payment: {
+            orderId: payment.orderId,
+            razorpayOrderId: payment.razorpayOrderId || payment.orderId,
+            orderNumber: payment.orderNumber,
+            paymentId: payment.paymentId,
+            razorpayPaymentId: payment.razorpayPaymentId,
+            paymentMethod: payment.paymentMethod,
+            amount: payment.amount,
+            status: payment.status
+          }
+        },
+        'Addon payment verified and credits added successfully'
+      )
+    );
+  }
+
   // Find plan from database
   const planDoc = await findPlanByReference(payment.plan);
   const billingCycle = payment.billingCycle;
@@ -384,6 +757,14 @@ export const verifyMembershipPayment = asyncHandler(async (req, res) => {
     vipBadge: false
   };
 
+  // Fetch existing user to preserve any already purchased addon credits
+  const existingUser = await User.findById(userId);
+  const existingAddonSuperLikes = existingUser?.subscription?.addonSuperLikesRemaining || 0;
+  const existingAddonBoosts = existingUser?.subscription?.addonBoostsRemaining || 0;
+
+  const planSuperLikes = perks.superLikesPerWeek || 0;
+  const planBoosts = perks.profileBoostPerMonth || 0;
+
   const subscriptionData = {
     plan: planDoc ? planDoc.slug : payment.plan,
     planName: planDoc ? planDoc.name : payment.plan,
@@ -395,8 +776,14 @@ export const verifyMembershipPayment = asyncHandler(async (req, res) => {
     endDate,
     autoRenew: true,
     perks,
-    boostsRemaining: perks.profileBoostPerMonth || 0,
-    superLikesRemaining: perks.superLikesPerWeek || 0
+    planBoostsRemaining: planBoosts,
+    addonBoostsRemaining: existingAddonBoosts,
+    boostsRemaining: planBoosts + existingAddonBoosts,
+    lastBoostsRefillAt: new Date(),
+    planSuperLikesRemaining: planSuperLikes,
+    addonSuperLikesRemaining: existingAddonSuperLikes,
+    superLikesRemaining: planSuperLikes + existingAddonSuperLikes,
+    lastSuperLikesRefillAt: new Date()
   };
 
   // Update Payment record
@@ -470,26 +857,174 @@ export const verifyMembershipPayment = asyncHandler(async (req, res) => {
  */
 export const cancelSubscription = asyncHandler(async (req, res) => {
   const userId = req.user._id;
-  const { reason, note } = req.body || {};
+  const { orderId, order_id, paymentId, payment_id, reason, note } = req.body || {};
 
   const user = await User.findById(userId);
-  if (!user || !user.subscription || user.subscription.status !== SUBSCRIPTION_STATUS.ACTIVE) {
-    throw new ApiError(HTTP_STATUS.NOT_FOUND, 'No active subscription found to cancel');
+  if (!user) {
+    throw new ApiError(HTTP_STATUS.NOT_FOUND, 'User not found');
   }
 
-  // Find the captured payment associated with this user
-  const payment = await Payment.findOne({
-    user: userId,
-    status: PAYMENT_STATUS.CAPTURED
-  }).sort({ createdAt: -1 });
+  const targetOrderId = orderId || order_id;
+  const targetPaymentId = paymentId || payment_id;
+
+  let paymentQuery = { user: userId, status: PAYMENT_STATUS.CAPTURED };
+  if (targetOrderId) {
+    paymentQuery = {
+      user: userId,
+      status: PAYMENT_STATUS.CAPTURED,
+      $or: [{ orderId: targetOrderId }, { razorpayOrderId: targetOrderId }]
+    };
+  } else if (targetPaymentId) {
+    paymentQuery = {
+      user: userId,
+      status: PAYMENT_STATUS.CAPTURED,
+      $or: [{ paymentId: targetPaymentId }, { razorpayPaymentId: targetPaymentId }]
+    };
+  }
+
+  const payment = await Payment.findOne(paymentQuery).sort({ createdAt: -1 });
+  if (!payment) {
+    throw new ApiError(HTTP_STATUS.NOT_FOUND, 'No captured payment found to cancel or refund');
+  }
+
+  const uStr = userId.toString();
 
   // Determine activation timestamp and elapsed duration
-  const activationDate = payment?.createdAt || user.subscription.startDate || new Date();
+  const activationDate = payment.createdAt || user.subscription?.startDate || new Date();
   const elapsedMs = Date.now() - new Date(activationDate).getTime();
   const elapsedHours = elapsedMs / (1000 * 60 * 60);
   const isEligibleForRefund = elapsedHours <= REFUND_POLICY.MAX_REFUND_HOURS; // 48 hours
 
-  const uStr = userId.toString();
+  const isAddonPayment =
+    payment.type === 'addon' ||
+    Boolean(payment.addon) ||
+    payment.notes?.type === 'addon';
+
+  // ==========================================
+  // BRANCH 1: CANCEL / REFUND ADD-ON
+  // (Only remove this addon's quantity from credits, keep plan intact)
+  // ==========================================
+  if (isAddonPayment) {
+    if (!isEligibleForRefund) {
+      throw new ApiError(
+        HTTP_STATUS.BAD_REQUEST,
+        `Addon refund is only applicable within ${REFUND_POLICY.MAX_REFUND_DAYS} days (48 hours) of purchase. Elapsed time: ${Math.round(elapsedHours)} hours.`
+      );
+    }
+
+    const addonDoc = await findAddonByReference(
+      payment.addon || payment.notes?.addonSlug || payment.plan
+    );
+    const addonType =
+      addonDoc?.type ||
+      payment.addonDetails?.type ||
+      (payment.plan?.includes('boost') ? ADDON_TYPES.PROFILE_BOOST : ADDON_TYPES.SUPER_LIKES);
+    const quantityToRemove = addonDoc?.quantity || payment.addonDetails?.quantity || 1;
+
+    const refundId = `ref_${payment.orderId}_${Date.now()}`;
+    const refundNote = reason || note || `Addon ${payment.plan} cancelled within 2-day refund policy window`;
+    const targetRzpPaymentId = payment.razorpayPaymentId || payment.paymentId;
+
+    let refundResult = null;
+    try {
+      if (targetRzpPaymentId && paymentService.isConfigured) {
+        refundResult = await paymentService.initiateRefund({
+          paymentId: targetRzpPaymentId,
+          refundAmount: payment.amount,
+          refundNote,
+          refundSpeed: 'normal'
+        });
+      }
+
+      payment.status = PAYMENT_STATUS.REFUNDED;
+      payment.refundId = refundResult?.refundId || refundId;
+      payment.razorpayRefundId = refundResult?.refundId || null;
+      payment.refundAmount = payment.amount;
+      payment.refundStatus = refundResult?.refundStatus || 'SUCCESS';
+      payment.refundArn = refundResult?.refundArn || null;
+      payment.refundedAt = new Date();
+      payment.refundReason = refundNote;
+      await payment.save();
+    } catch (err) {
+      console.error('❌ Razorpay Refund Error:', err.message);
+      payment.status = PAYMENT_STATUS.REFUND_PENDING;
+      payment.refundId = refundId;
+      payment.refundReason = `Refund processing pending: ${err.message}`;
+      await payment.save();
+    }
+
+    // Deduct ONLY this addon's quantity from user's remaining addon credits
+    if (addonType === ADDON_TYPES.PROFILE_BOOST || addonType === 'profile_boost') {
+      user.subscription.addonBoostsRemaining = Math.max(
+        0,
+        (user.subscription.addonBoostsRemaining || 0) - quantityToRemove
+      );
+      user.subscription.boostsRemaining = Math.max(
+        0,
+        (user.subscription.planBoostsRemaining || 0) + user.subscription.addonBoostsRemaining
+      );
+    } else {
+      user.subscription.addonSuperLikesRemaining = Math.max(
+        0,
+        (user.subscription.addonSuperLikesRemaining || 0) - quantityToRemove
+      );
+      user.subscription.superLikesRemaining = Math.max(
+        0,
+        (user.subscription.planSuperLikesRemaining || 0) + user.subscription.addonSuperLikesRemaining
+      );
+    }
+    await user.save();
+
+    await Promise.all([
+      CacheService.del(`user:${uStr}`),
+      CacheService.del(`profile:${uStr}`),
+      CacheService.delByPattern(`feed:*`)
+    ]);
+
+    emitToUser(uStr, 'addon_cancelled', {
+      orderId: payment.orderId,
+      addon: addonDoc || payment.addonDetails,
+      removedCredits: quantityToRemove,
+      boostsRemaining: user.subscription.boostsRemaining,
+      superLikesRemaining: user.subscription.superLikesRemaining,
+      refundAmount: payment.amount,
+      timestamp: new Date().toISOString()
+    });
+
+    emitToUser(uStr, 'membership_updated', {
+      subscription: user.subscription,
+      membership: user.subscription,
+      timestamp: new Date().toISOString()
+    });
+
+    return res.status(HTTP_STATUS.OK).json(
+      new ApiResponse(
+        HTTP_STATUS.OK,
+        {
+          type: 'addon',
+          refunded: true,
+          refundAmount: payment.amount,
+          removedCredits: quantityToRemove,
+          boostsRemaining: user.subscription.boostsRemaining,
+          superLikesRemaining: user.subscription.superLikesRemaining,
+          payment: {
+            orderId: payment.orderId,
+            status: payment.status,
+            refundId: payment.refundId,
+            refundArn: payment.refundArn
+          }
+        },
+        `Add-on cancelled successfully. ${quantityToRemove} credits removed and full refund of ₹${payment.amount} initiated.`
+      )
+    );
+  }
+
+  // ==========================================
+  // BRANCH 2: CANCEL MEMBERSHIP PLAN
+  // ==========================================
+  if (!user.subscription || user.subscription.status !== SUBSCRIPTION_STATUS.ACTIVE) {
+    throw new ApiError(HTTP_STATUS.NOT_FOUND, 'No active subscription found to cancel');
+  }
 
   // CASE 1: Eligible for Refund (Within 2 Days)
   if (isEligibleForRefund && payment && payment.amount > 0) {
@@ -545,7 +1080,11 @@ export const cancelSubscription = asyncHandler(async (req, res) => {
       vipBadge: false
     };
     user.subscription.boostsRemaining = 0;
+    user.subscription.planBoostsRemaining = 0;
+    user.subscription.addonBoostsRemaining = 0;
     user.subscription.superLikesRemaining = 0;
+    user.subscription.planSuperLikesRemaining = 0;
+    user.subscription.addonSuperLikesRemaining = 0;
     await user.save();
 
     // Invalidate Redis Caches
@@ -676,61 +1215,130 @@ export const handleRazorpayWebhook = asyncHandler(async (req, res) => {
         await payment.save();
 
         if (payment.user) {
-          const planDoc = await findPlanByReference(payment.plan);
-          const billingCycle = payment.billingCycle;
-          const pricingConfig =
-            planDoc?.pricing[billingCycle] ||
-            planDoc?.pricing[BILLING_CYCLES.MONTHLY] || { durationDays: 30 };
-
-          const startDate = new Date();
-          const endDate = new Date(
-            startDate.getTime() + pricingConfig.durationDays * 24 * 60 * 60 * 1000
-          );
-          const perks = planDoc?.perks || {
-            unlimitedSwipes: false,
-            rewindAllowed: false,
-            superLikesPerWeek: 0,
-            passportLocation: false,
-            seeWhoLikedYou: false,
-            profileBoostPerMonth: 0,
-            priorityLikes: false,
-            messageBeforeMatch: false,
-            vipBadge: false
-          };
-
-          await User.findByIdAndUpdate(payment.user, {
-            $set: {
-              subscription: {
-                plan: planDoc ? planDoc.slug : payment.plan,
-                planName: planDoc ? planDoc.name : payment.plan,
-                billingCycle,
-                amount: payment.amount,
-                currency: payment.currency,
-                status: SUBSCRIPTION_STATUS.ACTIVE,
-                startDate,
-                endDate,
-                autoRenew: true,
-                perks,
-                boostsRemaining: perks.profileBoostPerMonth || 0,
-                superLikesRemaining: perks.superLikesPerWeek || 0
-              }
-            }
-          });
-
-          // Invalidate Redis Caches
           const uStr = payment.user.toString();
-          await Promise.all([
-            CacheService.del(`user:${uStr}`),
-            CacheService.del(`profile:${uStr}`),
-            CacheService.delByPattern(`feed:*`)
-          ]);
+          const isAddonPayment =
+            payment.type === 'addon' ||
+            Boolean(payment.addon) ||
+            payment.notes?.type === 'addon';
 
-          emitToUser(uStr, 'membership_updated', {
-            status: 'active',
-            orderId,
-            plan: payment.plan,
-            timestamp: new Date().toISOString()
-          });
+          if (isAddonPayment) {
+            const addonDoc = await findAddonByReference(
+              payment.addon || payment.notes?.addonSlug || payment.plan
+            );
+            const addonType =
+              addonDoc?.type ||
+              payment.addonDetails?.type ||
+              (payment.plan?.includes('boost') ? ADDON_TYPES.PROFILE_BOOST : ADDON_TYPES.SUPER_LIKES);
+            const quantity = addonDoc?.quantity || payment.addonDetails?.quantity || 1;
+
+            const incQuery = {};
+            if (addonType === ADDON_TYPES.PROFILE_BOOST || addonType === 'profile_boost') {
+              incQuery['subscription.boostsRemaining'] = quantity;
+              incQuery['subscription.addonBoostsRemaining'] = quantity;
+            } else {
+              incQuery['subscription.superLikesRemaining'] = quantity;
+              incQuery['subscription.addonSuperLikesRemaining'] = quantity;
+            }
+
+            const updatedUser = await User.findByIdAndUpdate(
+              payment.user,
+              { $inc: incQuery },
+              { new: true }
+            );
+
+            await Promise.all([
+              CacheService.del(`user:${uStr}`),
+              CacheService.del(`profile:${uStr}`),
+              CacheService.delByPattern(`feed:*`)
+            ]);
+
+            emitToUser(uStr, 'addon_purchased', {
+              type: 'addon',
+              addon: addonDoc || payment.addonDetails,
+              addonType,
+              quantityAdded: quantity,
+              boostsRemaining: updatedUser?.subscription?.boostsRemaining || 0,
+              superLikesRemaining: updatedUser?.subscription?.superLikesRemaining || 0,
+              timestamp: new Date().toISOString()
+            });
+
+            emitToUser(uStr, 'membership_updated', {
+              status: 'active',
+              orderId,
+              subscription: updatedUser?.subscription,
+              timestamp: new Date().toISOString()
+            });
+          } else {
+            const planDoc = await findPlanByReference(payment.plan);
+            const billingCycle = payment.billingCycle;
+            const pricingConfig =
+              planDoc?.pricing[billingCycle] ||
+              planDoc?.pricing[BILLING_CYCLES.MONTHLY] || { durationDays: 30 };
+
+            const startDate = new Date();
+            const endDate = new Date(
+              startDate.getTime() + pricingConfig.durationDays * 24 * 60 * 60 * 1000
+            );
+            const perks = planDoc?.perks || {
+              unlimitedSwipes: false,
+              rewindAllowed: false,
+              superLikesPerWeek: 0,
+              passportLocation: false,
+              seeWhoLikedYou: false,
+              profileBoostPerMonth: 0,
+              priorityLikes: false,
+              messageBeforeMatch: false,
+              vipBadge: false
+            };
+
+            const existingUser = await User.findById(payment.user);
+            const existingAddonSuperLikes =
+              existingUser?.subscription?.addonSuperLikesRemaining || 0;
+            const existingAddonBoosts =
+              existingUser?.subscription?.addonBoostsRemaining || 0;
+
+            const planSuperLikes = perks.superLikesPerWeek || 0;
+            const planBoosts = perks.profileBoostPerMonth || 0;
+
+            await User.findByIdAndUpdate(payment.user, {
+              $set: {
+                subscription: {
+                  plan: planDoc ? planDoc.slug : payment.plan,
+                  planName: planDoc ? planDoc.name : payment.plan,
+                  billingCycle,
+                  amount: payment.amount,
+                  currency: payment.currency,
+                  status: SUBSCRIPTION_STATUS.ACTIVE,
+                  startDate,
+                  endDate,
+                  autoRenew: true,
+                  perks,
+                  planBoostsRemaining: planBoosts,
+                  addonBoostsRemaining: existingAddonBoosts,
+                  boostsRemaining: planBoosts + existingAddonBoosts,
+                  lastBoostsRefillAt: new Date(),
+                  planSuperLikesRemaining: planSuperLikes,
+                  addonSuperLikesRemaining: existingAddonSuperLikes,
+                  superLikesRemaining: planSuperLikes + existingAddonSuperLikes,
+                  lastSuperLikesRefillAt: new Date()
+                }
+              }
+            });
+
+            // Invalidate Redis Caches
+            await Promise.all([
+              CacheService.del(`user:${uStr}`),
+              CacheService.del(`profile:${uStr}`),
+              CacheService.delByPattern(`feed:*`)
+            ]);
+
+            emitToUser(uStr, 'membership_updated', {
+              status: 'active',
+              orderId,
+              plan: payment.plan,
+              timestamp: new Date().toISOString()
+            });
+          }
         }
       }
     }
@@ -881,5 +1489,174 @@ export const deletePlanAdmin = asyncHandler(async (req, res) => {
 
   return res.status(HTTP_STATUS.OK).json(
     new ApiResponse(HTTP_STATUS.OK, { id }, 'Plan deleted successfully')
+  );
+});
+
+// ==========================================
+// PROFILE BOOST ACTIVATION (Use 1 Boost Credit)
+// ==========================================
+
+/**
+ * 11. Activate Profile Boost (Consumes 1 Boost Credit for 30 minutes)
+ * Protected endpoint
+ */
+export const activateProfileBoost = asyncHandler(async (req, res) => {
+  const userId = req.user._id;
+
+  const user = await User.findById(userId);
+  if (!user) {
+    throw new ApiError(HTTP_STATUS.NOT_FOUND, 'User not found');
+  }
+
+  const currentBoosts = user.subscription?.boostsRemaining || 0;
+  if (currentBoosts <= 0) {
+    throw new ApiError(
+      HTTP_STATUS.BAD_REQUEST,
+      'You have 0 boosts remaining. Please purchase a profile boost pack from Add-ons.'
+    );
+  }
+
+  // Decrement boost credit: consume planBoostsRemaining first, then addonBoostsRemaining
+  if ((user.subscription.planBoostsRemaining || 0) > 0) {
+    user.subscription.planBoostsRemaining -= 1;
+  } else {
+    user.subscription.addonBoostsRemaining = Math.max(
+      0,
+      (user.subscription.addonBoostsRemaining || 0) - 1
+    );
+  }
+  user.subscription.boostsRemaining =
+    (user.subscription.planBoostsRemaining || 0) +
+    (user.subscription.addonBoostsRemaining || 0);
+  await user.save();
+
+  // Boost profile for 24 hours
+  const boostDurationMs = 24 * 60 * 60 * 1000;
+  const boostExpiresAt = new Date(Date.now() + boostDurationMs);
+
+  const updatedProfile = await Profile.findOneAndUpdate(
+    { user: userId },
+    {
+      $set: {
+        isBoosted: true,
+        boostExpiresAt
+      }
+    },
+    { new: true, upsert: true }
+  );
+
+  // Invalidate Redis Caches
+  const uStr = userId.toString();
+  await Promise.all([
+    CacheService.del(`user:${uStr}`),
+    CacheService.del(`profile:${uStr}`),
+    CacheService.delByPattern(`feed:*`)
+  ]);
+
+  // Real-time socket notification
+  emitToUser(uStr, 'boost_activated', {
+    isBoosted: true,
+    boostExpiresAt,
+    boostsRemaining: user.subscription.boostsRemaining,
+    durationHours: 24,
+    durationMinutes: 1440,
+    timestamp: new Date().toISOString()
+  });
+
+  return res.status(HTTP_STATUS.OK).json(
+    new ApiResponse(
+      HTTP_STATUS.OK,
+      {
+        isBoosted: true,
+        boostExpiresAt,
+        boostsRemaining: user.subscription.boostsRemaining,
+        durationHours: 24,
+        durationMinutes: 1440,
+        profile: updatedProfile
+      },
+      'Profile Boost activated successfully! You are now top profile in your area for 24 hours.'
+    )
+  );
+});
+
+// ==========================================
+// ADMIN ENDPOINTS (Manage Add-ons Dynamically)
+// ==========================================
+
+/**
+ * 12. Admin: Get all Addons (Active + Inactive)
+ */
+export const getAllAddonsAdmin = asyncHandler(async (req, res) => {
+  await ensureInitialAddonsSeeded();
+  const addons = await Addon.find().sort({ displayOrder: 1, createdAt: 1 });
+
+  return res.status(HTTP_STATUS.OK).json(
+    new ApiResponse(HTTP_STATUS.OK, addons, 'All addons retrieved successfully')
+  );
+});
+
+/**
+ * 13. Admin: Create a new Addon
+ */
+export const createAddonAdmin = asyncHandler(async (req, res) => {
+  const { slug, name } = req.body;
+
+  const existingAddon = await Addon.findOne({ slug: slug.toLowerCase().trim() });
+  if (existingAddon) {
+    throw new ApiError(HTTP_STATUS.CONFLICT, `Addon with slug "${slug}" already exists`);
+  }
+
+  const addon = await Addon.create({
+    ...req.body,
+    slug: slug.toLowerCase().trim()
+  });
+
+  return res.status(HTTP_STATUS.CREATED).json(
+    new ApiResponse(HTTP_STATUS.CREATED, addon, `Addon "${name}" created successfully`)
+  );
+});
+
+/**
+ * 14. Admin: Update an existing Addon
+ */
+export const updateAddonAdmin = asyncHandler(async (req, res) => {
+  const { id } = req.params;
+
+  if (!mongoose.isValidObjectId(id)) {
+    throw new ApiError(HTTP_STATUS.BAD_REQUEST, 'Invalid Addon ID');
+  }
+
+  const updatedAddon = await Addon.findByIdAndUpdate(
+    id,
+    { $set: req.body },
+    { new: true, runValidators: true }
+  );
+
+  if (!updatedAddon) {
+    throw new ApiError(HTTP_STATUS.NOT_FOUND, 'Addon not found');
+  }
+
+  return res.status(HTTP_STATUS.OK).json(
+    new ApiResponse(HTTP_STATUS.OK, updatedAddon, 'Addon updated successfully')
+  );
+});
+
+/**
+ * 15. Admin: Delete an Addon
+ */
+export const deleteAddonAdmin = asyncHandler(async (req, res) => {
+  const { id } = req.params;
+
+  if (!mongoose.isValidObjectId(id)) {
+    throw new ApiError(HTTP_STATUS.BAD_REQUEST, 'Invalid Addon ID');
+  }
+
+  const deletedAddon = await Addon.findByIdAndDelete(id);
+  if (!deletedAddon) {
+    throw new ApiError(HTTP_STATUS.NOT_FOUND, 'Addon not found');
+  }
+
+  return res.status(HTTP_STATUS.OK).json(
+    new ApiResponse(HTTP_STATUS.OK, { id }, 'Addon deleted successfully')
   );
 });

@@ -2,19 +2,38 @@ import { z } from 'zod';
 import { BILLING_CYCLES } from '../constants/index.js';
 
 export const createOrderSchema = z.object({
-  body: z.object({
-    plan: z.string({ required_error: 'Plan ID or Slug is required' }),
-    billingCycle: z
-      .enum([BILLING_CYCLES.MONTHLY, BILLING_CYCLES.ANNUAL], {
-        errorMap: () => ({ message: 'Billing cycle must be either monthly or annual' })
-      })
-      .default(BILLING_CYCLES.MONTHLY),
-    paymentMethod: z.string().optional().default('Razorpay'),
-    customerPhone: z.string().optional(),
-    customerName: z.string().optional(),
-    customerEmail: z.string().email().optional(),
-    returnUrl: z.string().url().optional()
-  })
+  body: z
+    .object({
+      type: z.string().optional().default('subscription'),
+      plan: z.string().optional(),
+      addon: z.string().optional(),
+      addonId: z.string().optional(),
+      addonSlug: z.string().optional(),
+      billingCycle: z
+        .enum([BILLING_CYCLES.MONTHLY, BILLING_CYCLES.ANNUAL, 'one_time'])
+        .optional()
+        .default(BILLING_CYCLES.MONTHLY),
+      paymentMethod: z.string().optional().default('Razorpay'),
+      customerPhone: z.string().optional(),
+      customerName: z.string().optional(),
+      customerEmail: z.string().email().optional(),
+      returnUrl: z.string().url().optional()
+    })
+    .refine(
+      (data) => {
+        const isAddon =
+          data.type?.toLowerCase() === 'addon' ||
+          data.type?.toLowerCase() === 'addons' ||
+          Boolean(data.addon || data.addonId || data.addonSlug);
+        if (isAddon) {
+          return Boolean(data.addon || data.addonId || data.addonSlug || data.plan);
+        }
+        return Boolean(data.plan);
+      },
+      {
+        message: 'Plan reference is required for subscriptions, or addon reference for addons'
+      }
+    )
 });
 
 export const verifyPaymentSchema = z.object({
@@ -45,6 +64,10 @@ export const verifyPaymentSchema = z.object({
 export const cancelSubscriptionSchema = z.object({
   body: z
     .object({
+      orderId: z.string().optional(),
+      order_id: z.string().optional(),
+      paymentId: z.string().optional(),
+      payment_id: z.string().optional(),
       reason: z.string().optional(),
       note: z.string().optional()
     })
@@ -121,6 +144,42 @@ export const updatePlanAdminSchema = z.object({
         vipBadge: z.boolean().optional()
       })
       .optional(),
+    isActive: z.boolean().optional(),
+    displayOrder: z.number().optional()
+  })
+});
+
+export const createAddonAdminSchema = z.object({
+  body: z.object({
+    name: z.string({ required_error: 'Addon name is required' }).min(2),
+    slug: z.string({ required_error: 'Addon slug is required' }).min(2),
+    type: z.enum(['super_likes', 'profile_boost', 'credits', 'custom']),
+    price: z.number({ required_error: 'Price is required' }).min(0),
+    originalPrice: z.number().optional().default(0),
+    discountPercent: z.number().min(0).max(100).optional().default(0),
+    quantity: z.number().min(1).default(1),
+    durationMinutes: z.number().optional().default(0),
+    description: z.string().optional().default(''),
+    tag: z.string().nullable().optional(),
+    icon: z.string().optional().default('Heart'),
+    isActive: z.boolean().optional().default(true),
+    displayOrder: z.number().optional().default(0)
+  })
+});
+
+export const updateAddonAdminSchema = z.object({
+  body: z.object({
+    name: z.string().min(2).optional(),
+    slug: z.string().min(2).optional(),
+    type: z.enum(['super_likes', 'profile_boost', 'credits', 'custom']).optional(),
+    price: z.number().min(0).optional(),
+    originalPrice: z.number().optional(),
+    discountPercent: z.number().min(0).max(100).optional(),
+    quantity: z.number().min(1).optional(),
+    durationMinutes: z.number().optional(),
+    description: z.string().optional(),
+    tag: z.string().nullable().optional(),
+    icon: z.string().optional(),
     isActive: z.boolean().optional(),
     displayOrder: z.number().optional()
   })

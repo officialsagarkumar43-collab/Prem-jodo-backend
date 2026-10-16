@@ -54,7 +54,8 @@ export const upsertProfile = asyncHandler(async (req, res) => {
   // Invalidate user profile and feed caches in Redis/Memory
   await Promise.all([
     CacheService.del(`profile:${userId.toString()}`),
-    CacheService.delByPattern('feed:*')
+    CacheService.delByPattern('feed:*'),
+    CacheService.delByPattern('see_who_likes:*')
   ]);
 
   return res.status(HTTP_STATUS.OK).json(

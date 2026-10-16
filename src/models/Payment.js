@@ -63,14 +63,28 @@ const paymentSchema = new mongoose.Schema(
       type: String,
       default: 'INR'
     },
+    type: {
+      type: String,
+      enum: ['subscription', 'addon'],
+      default: 'subscription',
+      index: true
+    },
     plan: {
       type: String,
-      enum: Object.values(MEMBERSHIP_TIERS),
-      required: true
+      default: null
+    },
+    addon: {
+      type: mongoose.Schema.Types.ObjectId,
+      ref: 'Addon',
+      default: null,
+      index: true
+    },
+    addonDetails: {
+      type: mongoose.Schema.Types.Mixed,
+      default: null
     },
     billingCycle: {
       type: String,
-      enum: Object.values(BILLING_CYCLES),
       default: BILLING_CYCLES.MONTHLY
     },
     status: {

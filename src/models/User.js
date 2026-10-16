@@ -111,9 +111,33 @@ const userSchema = new mongoose.Schema(
         type: Number,
         default: 0
       },
+      planBoostsRemaining: {
+        type: Number,
+        default: 0
+      },
+      addonBoostsRemaining: {
+        type: Number,
+        default: 0
+      },
+      lastBoostsRefillAt: {
+        type: Date,
+        default: Date.now
+      },
       superLikesRemaining: {
         type: Number,
         default: 0
+      },
+      planSuperLikesRemaining: {
+        type: Number,
+        default: 0
+      },
+      addonSuperLikesRemaining: {
+        type: Number,
+        default: 0
+      },
+      lastSuperLikesRefillAt: {
+        type: Date,
+        default: Date.now
       }
     },
     refreshToken: {

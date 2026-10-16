@@ -80,7 +80,17 @@ const profileSchema = new mongoose.Schema(
       default: ''
     },
     // Interests
-    interests: [{ type: String }]
+    interests: [{ type: String }],
+    isBoosted: {
+      type: Boolean,
+      default: false,
+      index: true
+    },
+    boostExpiresAt: {
+      type: Date,
+      default: null,
+      index: true
+    }
   },
   {
     timestamps: true
