@@ -86,6 +86,7 @@ const planSchema = new mongoose.Schema(
     },
     perks: {
       unlimitedSwipes: { type: Boolean, default: false },
+      dailySwipeLimit: { type: Number, default: 50, min: 0 },
       rewindAllowed: { type: Boolean, default: false },
       superLikesPerWeek: { type: Number, default: 0 },
       passportLocation: { type: Boolean, default: false },

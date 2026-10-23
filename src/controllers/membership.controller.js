@@ -16,6 +16,7 @@ import {
   DEFAULT_PLANS_SEED,
   ADDON_TYPES,
   DEFAULT_ADDONS_SEED,
+  DEFAULT_FREE_PERKS,
   HTTP_STATUS
 } from '../constants/index.js';
 import { ENV } from '../config/env.js';
@@ -159,17 +160,9 @@ export const getMySubscription = asyncHandler(async (req, res) => {
       user.subscription.status = SUBSCRIPTION_STATUS.EXPIRED;
       user.subscription.plan = MEMBERSHIP_TIERS.FREE;
       user.subscription.planName = 'Prem Jodo Free';
-      user.subscription.perks = {
-        unlimitedSwipes: false,
-        rewindAllowed: false,
-        superLikesPerWeek: 0,
-        passportLocation: false,
-        seeWhoLikedYou: false,
-        profileBoostPerMonth: 0,
-        priorityLikes: false,
-        messageBeforeMatch: false,
-        vipBadge: false
-      };
+      user.subscription.perks = { ...DEFAULT_FREE_PERKS };
+      user.subscription.swipesUsedToday = 0;
+      user.subscription.lastSwipeResetAt = new Date();
       user.subscription.boostsRemaining = 0;
       user.subscription.planBoostsRemaining = 0;
       user.subscription.addonBoostsRemaining = 0;
@@ -202,12 +195,29 @@ export const getMySubscription = asyncHandler(async (req, res) => {
     hoursRemainingForRefund = Math.max(0, Math.round(REFUND_POLICY.MAX_REFUND_HOURS - elapsedHours));
   }
 
+  const perks = user.subscription?.perks || {};
+  const isUnlimitedSwipes = Boolean(perks.unlimitedSwipes);
+  const dailySwipeLimit = perks.dailySwipeLimit ?? 50;
+  const now = new Date();
+  const lastReset = user.subscription?.lastSwipeResetAt
+    ? new Date(user.subscription.lastSwipeResetAt)
+    : new Date(0);
+  const isNewDay = now.toDateString() !== lastReset.toDateString();
+  const swipesUsedToday = isNewDay ? 0 : (user.subscription?.swipesUsedToday || 0);
+  const swipesRemainingToday = isUnlimitedSwipes
+    ? 'unlimited'
+    : Math.max(0, dailySwipeLimit - swipesUsedToday);
+
   return res.status(HTTP_STATUS.OK).json(
     new ApiResponse(
       HTTP_STATUS.OK,
       {
         subscription: user.subscription,
         isVip: !!user.subscription?.perks?.vipBadge,
+        dailySwipeLimit: isUnlimitedSwipes ? null : dailySwipeLimit,
+        swipesUsedToday,
+        swipesRemainingToday,
+        unlimitedSwipes: isUnlimitedSwipes,
         refundEligibility: {
           isEligible: isEligibleForRefund,
           hoursRemaining: hoursRemainingForRefund,
@@ -746,15 +756,7 @@ export const verifyMembershipPayment = asyncHandler(async (req, res) => {
   const endDate = new Date(startDate.getTime() + pricingConfig.durationDays * 24 * 60 * 60 * 1000);
 
   const perks = planDoc?.perks || {
-    unlimitedSwipes: false,
-    rewindAllowed: false,
-    superLikesPerWeek: 0,
-    passportLocation: false,
-    seeWhoLikedYou: false,
-    profileBoostPerMonth: 0,
-    priorityLikes: false,
-    messageBeforeMatch: false,
-    vipBadge: false
+    ...DEFAULT_FREE_PERKS
   };
 
   // Fetch existing user to preserve any already purchased addon credits
@@ -1068,17 +1070,9 @@ export const cancelSubscription = asyncHandler(async (req, res) => {
     user.subscription.planName = 'Prem Jodo Free';
     user.subscription.autoRenew = false;
     user.subscription.endDate = new Date();
-    user.subscription.perks = {
-      unlimitedSwipes: false,
-      rewindAllowed: false,
-      superLikesPerWeek: 0,
-      passportLocation: false,
-      seeWhoLikedYou: false,
-      profileBoostPerMonth: 0,
-      priorityLikes: false,
-      messageBeforeMatch: false,
-      vipBadge: false
-    };
+    user.subscription.perks = { ...DEFAULT_FREE_PERKS };
+    user.subscription.swipesUsedToday = 0;
+    user.subscription.lastSwipeResetAt = new Date();
     user.subscription.boostsRemaining = 0;
     user.subscription.planBoostsRemaining = 0;
     user.subscription.addonBoostsRemaining = 0;
@@ -1280,15 +1274,7 @@ export const handleRazorpayWebhook = asyncHandler(async (req, res) => {
               startDate.getTime() + pricingConfig.durationDays * 24 * 60 * 60 * 1000
             );
             const perks = planDoc?.perks || {
-              unlimitedSwipes: false,
-              rewindAllowed: false,
-              superLikesPerWeek: 0,
-              passportLocation: false,
-              seeWhoLikedYou: false,
-              profileBoostPerMonth: 0,
-              priorityLikes: false,
-              messageBeforeMatch: false,
-              vipBadge: false
+              ...DEFAULT_FREE_PERKS
             };
 
             const existingUser = await User.findById(payment.user);

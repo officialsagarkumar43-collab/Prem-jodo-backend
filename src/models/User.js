@@ -98,6 +98,7 @@ const userSchema = new mongoose.Schema(
       },
       perks: {
         unlimitedSwipes: { type: Boolean, default: false },
+        dailySwipeLimit: { type: Number, default: 50, min: 0 },
         rewindAllowed: { type: Boolean, default: false },
         superLikesPerWeek: { type: Number, default: 0 },
         passportLocation: { type: Boolean, default: false },
@@ -106,6 +107,15 @@ const userSchema = new mongoose.Schema(
         priorityLikes: { type: Boolean, default: false },
         messageBeforeMatch: { type: Boolean, default: false },
         vipBadge: { type: Boolean, default: false }
+      },
+      swipesUsedToday: {
+        type: Number,
+        default: 0,
+        min: 0
+      },
+      lastSwipeResetAt: {
+        type: Date,
+        default: Date.now
       },
       boostsRemaining: {
         type: Number,

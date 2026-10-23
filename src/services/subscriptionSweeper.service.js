@@ -131,8 +131,11 @@ export const checkAndExpireSubscriptions = async () => {
           'subscription.superLikesRemaining': 0,
           'subscription.planSuperLikesRemaining': 0,
           'subscription.addonSuperLikesRemaining': 0,
+          'subscription.swipesUsedToday': 0,
+          'subscription.lastSwipeResetAt': now,
           'subscription.perks': {
             unlimitedSwipes: false,
+            dailySwipeLimit: 50,
             rewindAllowed: false,
             superLikesPerWeek: 0,
             passportLocation: false,

@@ -99,6 +99,7 @@ export const createPlanAdminSchema = z.object({
     perks: z
       .object({
         unlimitedSwipes: z.boolean().optional(),
+        dailySwipeLimit: z.number().min(0).optional(),
         rewindAllowed: z.boolean().optional(),
         superLikesPerWeek: z.number().optional(),
         passportLocation: z.boolean().optional(),
@@ -134,6 +135,7 @@ export const updatePlanAdminSchema = z.object({
     perks: z
       .object({
         unlimitedSwipes: z.boolean().optional(),
+        dailySwipeLimit: z.number().min(0).optional(),
         rewindAllowed: z.boolean().optional(),
         superLikesPerWeek: z.number().optional(),
         passportLocation: z.boolean().optional(),

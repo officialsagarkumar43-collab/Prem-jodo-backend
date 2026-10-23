@@ -20,14 +20,41 @@ export const swipeUser = asyncHandler(async (req, res) => {
     throw new ApiError(HTTP_STATUS.BAD_REQUEST, 'You cannot swipe on yourself');
   }
 
-  // If action is SUPERLIKE, verify credit balance and deduct credit
-  let updatedSenderSubscription = null;
-  if (action === SWIPE_ACTION.SUPERLIKE) {
-    const sender = await User.findById(senderId);
-    if (!sender) {
-      throw new ApiError(HTTP_STATUS.NOT_FOUND, 'Sender user not found');
+  const sender = await User.findById(senderId);
+  if (!sender) {
+    throw new ApiError(HTTP_STATUS.NOT_FOUND, 'Sender user not found');
+  }
+
+  // 1. Check daily swipe limit if user does not have unlimited swipes
+  const perks = sender.subscription?.perks || {};
+  const isUnlimitedSwipes = Boolean(perks.unlimitedSwipes);
+  const dailySwipeLimit = perks.dailySwipeLimit !== undefined ? perks.dailySwipeLimit : 50;
+
+  if (!isUnlimitedSwipes) {
+    const now = new Date();
+    const lastReset = sender.subscription?.lastSwipeResetAt
+      ? new Date(sender.subscription.lastSwipeResetAt)
+      : new Date(0);
+    const isNewDay = now.toDateString() !== lastReset.toDateString();
+
+    if (isNewDay) {
+      sender.subscription.swipesUsedToday = 0;
+      sender.subscription.lastSwipeResetAt = now;
     }
 
+    const usedToday = sender.subscription.swipesUsedToday || 0;
+    if (usedToday >= dailySwipeLimit) {
+      throw new ApiError(
+        HTTP_STATUS.TOO_MANY_REQUESTS,
+        `Daily swipe limit of ${dailySwipeLimit} reached. Upgrade your plan for unlimited swipes or check back tomorrow!`
+      );
+    }
+
+    sender.subscription.swipesUsedToday = usedToday + 1;
+  }
+
+  // 2. If action is SUPERLIKE, verify credit balance and deduct credit
+  if (action === SWIPE_ACTION.SUPERLIKE) {
     const availableSuperLikes = sender.subscription?.superLikesRemaining || 0;
     if (availableSuperLikes <= 0) {
       throw new ApiError(
@@ -49,9 +76,6 @@ export const swipeUser = asyncHandler(async (req, res) => {
       (sender.subscription.planSuperLikesRemaining || 0) +
       (sender.subscription.addonSuperLikesRemaining || 0);
 
-    await sender.save();
-    updatedSenderSubscription = sender.subscription;
-
     // Real-time socket event to update client balance
     emitToUser(senderId.toString(), 'superlike_used', {
       superLikesRemaining: sender.subscription.superLikesRemaining,
@@ -60,12 +84,19 @@ export const swipeUser = asyncHandler(async (req, res) => {
       receiverId,
       timestamp: new Date().toISOString()
     });
-
-    emitToUser(senderId.toString(), 'membership_updated', {
-      subscription: sender.subscription,
-      timestamp: new Date().toISOString()
-    });
   }
+
+  await sender.save();
+
+  emitToUser(senderId.toString(), 'membership_updated', {
+    subscription: sender.subscription,
+    swipesUsedToday: sender.subscription.swipesUsedToday,
+    swipesRemainingToday: isUnlimitedSwipes
+      ? 'unlimited'
+      : Math.max(0, dailySwipeLimit - (sender.subscription.swipesUsedToday || 0)),
+    dailySwipeLimit: isUnlimitedSwipes ? null : dailySwipeLimit,
+    timestamp: new Date().toISOString()
+  });
 
   // Check if target user has already liked sender
   const reverseMatch = await Match.findOne({
@@ -185,6 +216,10 @@ export const swipeUser = asyncHandler(async (req, res) => {
     CacheService.delByPattern(`conversations:${receiverId}*`)
   ]);
 
+  const remainingToday = isUnlimitedSwipes
+    ? 'unlimited'
+    : Math.max(0, dailySwipeLimit - (sender.subscription?.swipesUsedToday || 0));
+
   return res.status(HTTP_STATUS.OK).json(
     new ApiResponse(
       HTTP_STATUS.OK,
@@ -193,7 +228,11 @@ export const swipeUser = asyncHandler(async (req, res) => {
         isMutualMatch: isMutual,
         conversation,
         partnerProfile: isMutual ? receiverProfile : null,
-        superLikesRemaining: updatedSenderSubscription?.superLikesRemaining
+        superLikesRemaining: sender.subscription?.superLikesRemaining,
+        swipesUsedToday: sender.subscription?.swipesUsedToday,
+        swipesRemainingToday: remainingToday,
+        dailySwipeLimit: isUnlimitedSwipes ? null : dailySwipeLimit,
+        unlimitedSwipes: isUnlimitedSwipes
       },
       isMutual ? "It's a Match! 🎉" : 'Swipe recorded'
     )
@@ -870,6 +909,12 @@ export const rewindSwipe = asyncHandler(async (req, res) => {
       { sender: targetUserId, receiver: userId },
       { $set: { status: MATCH_STATUS.PENDING, isMutualMatch: false } }
     );
+
+    // Restore 1 swipe if user has daily swipe tracking
+    if (user && user.subscription?.swipesUsedToday > 0) {
+      user.subscription.swipesUsedToday = Math.max(0, user.subscription.swipesUsedToday - 1);
+      await user.save();
+    }
   }
 
   // Clear caches

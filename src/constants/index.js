@@ -39,6 +39,7 @@ export const HTTP_STATUS = {
   FORBIDDEN: 403,
   NOT_FOUND: 404,
   CONFLICT: 409,
+  TOO_MANY_REQUESTS: 429,
   INTERNAL_SERVER_ERROR: 500
 };
 
@@ -132,6 +133,19 @@ export const REFUND_POLICY = {
   MAX_REFUND_HOURS: 48
 };
 
+export const DEFAULT_FREE_PERKS = {
+  unlimitedSwipes: false,
+  dailySwipeLimit: 50,
+  rewindAllowed: false,
+  superLikesPerWeek: 0,
+  passportLocation: false,
+  seeWhoLikedYou: false,
+  profileBoostPerMonth: 0,
+  priorityLikes: false,
+  messageBeforeMatch: false,
+  vipBadge: false
+};
+
 export const DEFAULT_PLANS_SEED = [
   {
     slug: 'plus',
@@ -165,6 +179,7 @@ export const DEFAULT_PLANS_SEED = [
     ],
     perks: {
       unlimitedSwipes: true,
+      dailySwipeLimit: 0,
       rewindAllowed: true,
       superLikesPerWeek: 5,
       passportLocation: true,
@@ -209,6 +224,7 @@ export const DEFAULT_PLANS_SEED = [
     ],
     perks: {
       unlimitedSwipes: true,
+      dailySwipeLimit: 0,
       rewindAllowed: true,
       superLikesPerWeek: 5,
       passportLocation: true,
@@ -253,6 +269,7 @@ export const DEFAULT_PLANS_SEED = [
     ],
     perks: {
       unlimitedSwipes: true,
+      dailySwipeLimit: 0,
       rewindAllowed: true,
       superLikesPerWeek: 10,
       passportLocation: true,
