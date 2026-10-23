@@ -7,7 +7,7 @@ import { Message } from '../models/Message.js';
 import { ApiError } from '../utils/ApiError.js';
 import { ApiResponse } from '../utils/ApiResponse.js';
 import { asyncHandler } from '../utils/asyncHandler.js';
-import { MATCH_STATUS, SWIPE_ACTION, HTTP_STATUS } from '../constants/index.js';
+import { MATCH_STATUS, SWIPE_ACTION, HTTP_STATUS, USER_ROLES } from '../constants/index.js';
 import { emitToUser } from '../sockets/index.js';
 import { CacheService } from '../services/cache.service.js';
 
@@ -883,7 +883,7 @@ export const rewindSwipe = asyncHandler(async (req, res) => {
   }
 
   const user = await User.findById(userId);
-  const isVip = user?.subscription?.status === 'active' || user?.role === 'admin';
+  const isVip = user?.subscription?.status === 'active' || user?.role === USER_ROLES.ADMIN || user?.role === USER_ROLES.OWNER;
   const rewindAllowed = Boolean(user?.subscription?.perks?.rewindAllowed || isVip);
 
   // Find the swipe where current user was sender

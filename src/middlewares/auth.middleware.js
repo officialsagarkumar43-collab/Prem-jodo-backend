@@ -4,6 +4,7 @@ import { ApiError } from '../utils/ApiError.js';
 import { asyncHandler } from '../utils/asyncHandler.js';
 import { ENV } from '../config/env.js';
 import { CacheService } from '../services/cache.service.js';
+import { USER_ROLES } from '../constants/index.js';
 
 export const verifyJWT = asyncHandler(async (req, res, next) => {
   const token =
@@ -35,9 +36,21 @@ export const verifyJWT = asyncHandler(async (req, res, next) => {
   }
 });
 
+// Middleware to verify Administrator or Owner privileges
 export const verifyAdmin = (req, res, next) => {
-  if (!req.user || req.user.role !== 'admin') {
-    throw new ApiError(403, 'Access denied. Administrator privileges required.');
+  const allowedRoles = [USER_ROLES.ADMIN, USER_ROLES.OWNER];
+  if (!req.user || !allowedRoles.includes(req.user.role)) {
+    throw new ApiError(403, 'Access denied. Administrator or Owner privileges required.');
+  }
+  next();
+};
+
+export const verifyAdminOrOwner = verifyAdmin;
+
+// Middleware to verify Owner-only privileges
+export const verifyOwner = (req, res, next) => {
+  if (!req.user || req.user.role !== USER_ROLES.OWNER) {
+    throw new ApiError(403, 'Access denied. Owner privileges required.');
   }
   next();
 };

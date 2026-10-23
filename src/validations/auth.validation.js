@@ -55,3 +55,74 @@ export const googleLoginSchema = z.object({
       message: 'Either email or Google token (idToken / credential) is required'
     })
 });
+
+export const adminLoginSchema = z.object({
+  body: z
+    .object({
+      email: z.string().email('Please enter a valid email address'),
+      password: z.string().min(1, 'Password is required').optional(),
+      otp: z.string().min(4, 'OTP must be at least 4 digits').optional()
+    })
+    .refine((data) => data.password || data.otp, {
+      message: 'Either password or OTP is required for login'
+    })
+});
+
+export const changePasswordSchema = z.object({
+  body: z
+    .object({
+      fullName: z.string().optional(),
+      name: z.string().optional(),
+      currentPassword: z.string().min(1, 'Current password is required').optional(),
+      oldPassword: z.string().min(1, 'Current password is required').optional(),
+      newPassword: z.string().min(6, 'New password must be at least 6 characters').optional(),
+      password: z.string().min(6, 'New password must be at least 6 characters').optional(),
+      confirmPassword: z.string().optional(),
+      confirmNewPassword: z.string().optional()
+    })
+    .refine((data) => data.currentPassword || data.oldPassword, {
+      message: 'Current password is required'
+    })
+    .refine((data) => data.newPassword || data.password, {
+      message: 'New password is required (minimum 6 characters)'
+    })
+    .refine(
+      (data) => {
+        const cur = data.currentPassword || data.oldPassword;
+        const nxt = data.newPassword || data.password;
+        return cur !== nxt;
+      },
+      {
+        message: 'New password cannot be the same as current password'
+      }
+    )
+    .refine(
+      (data) => {
+        const nxt = data.newPassword || data.password;
+        const conf = data.confirmPassword || data.confirmNewPassword;
+        if (conf) {
+          return conf === nxt;
+        }
+        return true;
+      },
+      {
+        message: 'Confirm password does not match new password'
+      }
+    )
+});
+
+export const updateAdminProfileSchema = z.object({
+  body: z
+    .object({
+      fullName: z.string().min(1, 'Full name cannot be empty').optional(),
+      name: z.string().min(1, 'Full name cannot be empty').optional(),
+      phoneNumber: z.string().optional(),
+      phone: z.string().optional()
+    })
+    .refine((data) => data.fullName || data.name || data.phoneNumber || data.phone, {
+      message: 'At least one field (fullName or phoneNumber) must be provided'
+    })
+});
+
+
+

@@ -6,7 +6,7 @@ import { ApiError } from '../utils/ApiError.js';
 import { ApiResponse } from '../utils/ApiResponse.js';
 import { asyncHandler } from '../utils/asyncHandler.js';
 import { sendOtpEmail } from '../utils/sendEmail.js';
-import { HTTP_STATUS } from '../constants/index.js';
+import { HTTP_STATUS, USER_ROLES } from '../constants/index.js';
 import { ENV } from '../config/env.js';
 import { CacheService } from '../services/cache.service.js';
 import { deleteUploadedFile } from '../middlewares/upload.middleware.js';
@@ -602,3 +602,234 @@ export const uploadFaceVerification = asyncHandler(async (req, res) => {
     )
   );
 });
+
+/**
+ * 8. Admin / Owner Authentication (/admin/login or /admin-login)
+ * Supports email + password (standard) or email + OTP
+ * Accessible by both 'admin' and 'owner' (company owner / malik)
+ */
+export const adminLogin = asyncHandler(async (req, res) => {
+  const { email, password, otp } = req.body;
+
+  if (!email) {
+    throw new ApiError(HTTP_STATUS.BAD_REQUEST, 'Email is required');
+  }
+
+  const normalizedEmail = email.toLowerCase().trim();
+
+  // Find user and explicitly select password field
+  const user = await User.findOne({ email: normalizedEmail }).select('+password');
+
+  if (!user) {
+    throw new ApiError(HTTP_STATUS.UNAUTHORIZED, 'Invalid credentials');
+  }
+
+  // Account status check
+  if (!user.isActive) {
+    throw new ApiError(HTTP_STATUS.FORBIDDEN, 'Your account has been deactivated. Please contact support.');
+  }
+
+  // Role validation: strictly admin or owner
+  const allowedAdminRoles = [USER_ROLES.ADMIN, USER_ROLES.OWNER];
+  if (!allowedAdminRoles.includes(user.role)) {
+    throw new ApiError(
+      HTTP_STATUS.FORBIDDEN,
+      'Access denied. Only administrators and owners can access this portal.'
+    );
+  }
+
+  // Authenticate via Password or OTP
+  if (password) {
+    if (!user.password) {
+      throw new ApiError(
+        HTTP_STATUS.UNAUTHORIZED,
+        'Password has not been set for this administrative account. Please set a password or use OTP.'
+      );
+    }
+
+    const isPasswordValid = await user.isPasswordCorrect(password);
+    if (!isPasswordValid) {
+      throw new ApiError(HTTP_STATUS.UNAUTHORIZED, 'Invalid email or password');
+    }
+  } else if (otp) {
+    const trimmedOtp = otp.toString().trim();
+    const otpRecord = await Otp.findOneAndDelete({ email: normalizedEmail });
+    if (!otpRecord) {
+      throw new ApiError(HTTP_STATUS.BAD_REQUEST, 'OTP expired or not requested. Please request a new OTP.');
+    }
+    if (otpRecord.otp !== trimmedOtp) {
+      throw new ApiError(HTTP_STATUS.BAD_REQUEST, 'Invalid OTP');
+    }
+  } else {
+    throw new ApiError(HTTP_STATUS.BAD_REQUEST, 'Password or OTP is required for login');
+  }
+
+  // Generate Access and Refresh Tokens
+  const { accessToken, refreshToken } = await generateAccessAndRefreshTokens(user);
+  const expiresIn = ENV.JWT_ACCESS_EXPIRY;
+
+  const roleTitle = user.role === USER_ROLES.OWNER ? 'Owner' : 'Admin';
+
+  return res
+    .status(HTTP_STATUS.OK)
+    .cookie('accessToken', accessToken, cookieOptions)
+    .cookie('refreshToken', refreshToken, cookieOptions)
+    .json(
+      new ApiResponse(
+        HTTP_STATUS.OK,
+        {
+          user: {
+            _id: user._id,
+            fullName: user.fullName,
+            email: user.email,
+            role: user.role,
+            isActive: user.isActive,
+            isVerified: user.isVerified
+          },
+          token: accessToken,
+          accessToken,
+          refreshToken,
+          expiresIn
+        },
+        `${roleTitle} login successful`
+      )
+    );
+});
+
+/**
+ * 9. Change Password (/change-password or /admin/change-password)
+ * Protected route: verifies current password before setting new password.
+ * Applicable to Owner & Admin accounts.
+ */
+export const changePassword = asyncHandler(async (req, res) => {
+  const currentPassword = req.body.currentPassword || req.body.oldPassword;
+  const newPassword = req.body.newPassword || req.body.password;
+
+  if (!currentPassword || !newPassword) {
+    throw new ApiError(HTTP_STATUS.BAD_REQUEST, 'Current password and new password are required');
+  }
+
+  if (newPassword.length < 6) {
+    throw new ApiError(HTTP_STATUS.BAD_REQUEST, 'New password must be at least 6 characters');
+  }
+
+  if (currentPassword === newPassword) {
+    throw new ApiError(HTTP_STATUS.BAD_REQUEST, 'New password cannot be the same as current password');
+  }
+
+  // Fetch logged in user with password field
+  const user = await User.findById(req.user._id).select('+password');
+  if (!user) {
+    throw new ApiError(HTTP_STATUS.NOT_FOUND, 'User not found');
+  }
+
+  // Ensure user has owner or admin role
+  const allowedRoles = [USER_ROLES.ADMIN, USER_ROLES.OWNER];
+  if (!allowedRoles.includes(user.role)) {
+    throw new ApiError(
+      HTTP_STATUS.FORBIDDEN,
+      'Access denied. Only administrators and owners can change password via this endpoint.'
+    );
+  }
+
+  // Check if account has an existing password
+  if (!user.password) {
+    throw new ApiError(
+      HTTP_STATUS.BAD_REQUEST,
+      'No password is set on this account. Please set a password first.'
+    );
+  }
+
+  // Verify the current password provided by user
+  const isCurrentPasswordCorrect = await user.isPasswordCorrect(currentPassword);
+  if (!isCurrentPasswordCorrect) {
+    throw new ApiError(
+      HTTP_STATUS.BAD_REQUEST,
+      'Incorrect current password. Please enter your valid current password.'
+    );
+  }
+
+  // If fullName is also supplied, update it as well
+  const fullName = req.body.fullName || req.body.name;
+  if (fullName && typeof fullName === 'string' && fullName.trim()) {
+    user.fullName = fullName.trim();
+  }
+
+  // Assign new password; mongoose pre-save hook will hash it automatically
+  user.password = newPassword;
+  await user.save();
+
+  return res.status(HTTP_STATUS.OK).json(
+    new ApiResponse(
+      HTTP_STATUS.OK,
+      {
+        _id: user._id,
+        fullName: user.fullName,
+        email: user.email,
+        role: user.role
+      },
+      'Password changed successfully'
+    )
+  );
+});
+
+/**
+ * 10. Update Admin / Owner Profile (/admin/update-profile or /admin/profile)
+ * Allows updating fullName / name (and optionally phoneNumber)
+ */
+export const updateAdminProfile = asyncHandler(async (req, res) => {
+  const fullName = req.body.fullName || req.body.name;
+  const phoneNumber = req.body.phoneNumber || req.body.phone;
+
+  if (!fullName && phoneNumber === undefined) {
+    throw new ApiError(HTTP_STATUS.BAD_REQUEST, 'Please provide at least full name to update');
+  }
+
+  const user = await User.findById(req.user._id);
+  if (!user) {
+    throw new ApiError(HTTP_STATUS.NOT_FOUND, 'User not found');
+  }
+
+  // Ensure user has owner or admin role
+  const allowedRoles = [USER_ROLES.ADMIN, USER_ROLES.OWNER];
+  if (!allowedRoles.includes(user.role)) {
+    throw new ApiError(
+      HTTP_STATUS.FORBIDDEN,
+      'Access denied. Only administrators and owners can update profile via this endpoint.'
+    );
+  }
+
+  if (fullName !== undefined) {
+    if (typeof fullName !== 'string' || !fullName.trim()) {
+      throw new ApiError(HTTP_STATUS.BAD_REQUEST, 'Full name cannot be empty');
+    }
+    user.fullName = fullName.trim();
+  }
+
+  if (phoneNumber !== undefined) {
+    user.phoneNumber = typeof phoneNumber === 'string' ? phoneNumber.trim() : phoneNumber;
+  }
+
+  await user.save();
+
+  return res.status(HTTP_STATUS.OK).json(
+    new ApiResponse(
+      HTTP_STATUS.OK,
+      {
+        user: {
+          _id: user._id,
+          fullName: user.fullName,
+          name: user.fullName,
+          email: user.email,
+          role: user.role,
+          phoneNumber: user.phoneNumber,
+          isActive: user.isActive,
+          isVerified: user.isVerified
+        }
+      },
+      'Profile updated successfully'
+    )
+  );
+});
+
+
