@@ -15,7 +15,11 @@ import {
   getAllAddonsAdmin,
   createAddonAdmin,
   updateAddonAdmin,
-  deleteAddonAdmin
+  deleteAddonAdmin,
+  getMyTransactions,
+  getMyTransactionById,
+  getAllTransactionsAdmin,
+  getTransactionByIdAdmin
 } from '../controllers/membership.controller.js';
 import { verifyJWT, verifyAdmin } from '../middlewares/auth.middleware.js';
 import { validate } from '../middlewares/validate.middleware.js';
@@ -45,6 +49,10 @@ router.post('/razorpay/webhook', handleRazorpayWebhook);
 router.use(verifyJWT);
 
 router.get('/my-subscription', getMySubscription);
+router.get('/my-transactions', getMyTransactions);
+router.get('/my-transactions/:id', getMyTransactionById);
+router.get('/transactions', getMyTransactions);
+router.get('/transactions/:id', getMyTransactionById);
 router.post('/create-order', validate(createOrderSchema), createMembershipOrder);
 router.post('/verify-payment', validate(verifyPaymentSchema), verifyMembershipPayment);
 router.post('/activate-boost', activateProfileBoost);
@@ -53,6 +61,12 @@ router.post('/cancel', validate(cancelSubscriptionSchema), cancelSubscription);
 // ==========================================
 // Admin Routes (Require Admin Role)
 // ==========================================
+// Transactions & Payments Management
+router.get('/admin/transactions', verifyAdmin, getAllTransactionsAdmin);
+router.get('/admin/transactions/:id', verifyAdmin, getTransactionByIdAdmin);
+router.get('/admin/payments', verifyAdmin, getAllTransactionsAdmin);
+router.get('/admin/payments/:id', verifyAdmin, getTransactionByIdAdmin);
+
 // Plans Management
 router.get('/admin/plans', verifyAdmin, getAllPlansAdmin);
 router.post('/admin/plans', verifyAdmin, validate(createPlanAdminSchema), createPlanAdmin);

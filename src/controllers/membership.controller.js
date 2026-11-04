@@ -465,7 +465,16 @@ export const createMembershipOrder = asyncHandler(async (req, res) => {
     throw new ApiError(HTTP_STATUS.BAD_REQUEST, `Invalid billing cycle: ${billingCycle}`);
   }
 
-  const amountInRupees = pricingConfig.totalAmount;
+  const baseAmount = Number(pricingConfig.totalAmount) || 0;
+  const discountPercent = Number(pricingConfig.discountPercent) || 0;
+
+  // Calculate discount and net payable amount after discount
+  const discountAmount =
+    discountPercent > 0 ? (baseAmount * discountPercent) / 100 : 0;
+  const amountInRupees =
+    discountPercent > 0
+      ? Math.max(0, Math.round(baseAmount - discountAmount))
+      : baseAmount;
   const amountInPaise = Math.round(amountInRupees * 100);
   const orderNumber = generate10DigitOrderNumber();
   const receipt = `pj_${orderNumber}`.slice(0, 40);
@@ -485,7 +494,10 @@ export const createMembershipOrder = asyncHandler(async (req, res) => {
       planName: planDoc.name,
       billingCycle,
       orderNumber,
-      description: orderNote
+      description: orderNote,
+      originalAmount: String(baseAmount),
+      discountPercent: String(discountPercent),
+      discountAmount: String(Math.round(discountAmount))
     }
   });
 
@@ -498,6 +510,9 @@ export const createMembershipOrder = asyncHandler(async (req, res) => {
     paymentMethod,
     amount: amountInRupees,
     amountInPaise,
+    originalAmount: baseAmount,
+    discountPercent,
+    discountAmount: Math.round(discountAmount),
     currency: 'INR',
     type: 'subscription',
     plan: planDoc.slug,
@@ -510,7 +525,10 @@ export const createMembershipOrder = asyncHandler(async (req, res) => {
       planName: planDoc.name,
       planId: planDoc._id.toString(),
       orderNumber,
-      paymentMethod
+      paymentMethod,
+      originalAmount: baseAmount,
+      discountPercent,
+      discountAmount: Math.round(discountAmount)
     }
   });
 
@@ -525,6 +543,9 @@ export const createMembershipOrder = asyncHandler(async (req, res) => {
         paymentMethod,
         amount: amountInRupees,
         amountInPaise,
+        originalAmount: baseAmount,
+        discountPercent,
+        discountAmount: Math.round(discountAmount),
         currency: 'INR',
         type: 'subscription',
         plan: planDoc.slug,
@@ -1644,5 +1665,257 @@ export const deleteAddonAdmin = asyncHandler(async (req, res) => {
 
   return res.status(HTTP_STATUS.OK).json(
     new ApiResponse(HTTP_STATUS.OK, { id }, 'Addon deleted successfully')
+  );
+});
+
+/**
+ * 16. Get My Transactions History (Logged-in User)
+ * Protected endpoint
+ */
+export const getMyTransactions = asyncHandler(async (req, res) => {
+  const userId = req.user._id;
+  const page = Math.max(1, parseInt(req.query.page, 10) || 1);
+  const limit = Math.min(50, Math.max(1, parseInt(req.query.limit, 10) || 10));
+  const skip = (page - 1) * limit;
+
+  const { status, type } = req.query;
+
+  const filter = { user: userId };
+
+  if (status && status !== 'all') {
+    const s = status.toLowerCase();
+    if (s === 'paid' || s === 'success') {
+      filter.status = PAYMENT_STATUS.CAPTURED;
+    } else {
+      filter.status = s;
+    }
+  }
+
+  if (type && type !== 'all') {
+    filter.type = type.toLowerCase();
+  }
+
+  const [transactions, total] = await Promise.all([
+    Payment.find(filter)
+      .sort({ createdAt: -1 })
+      .skip(skip)
+      .limit(limit)
+      .populate('addon', 'name slug type price originalPrice icon')
+      .lean(),
+    Payment.countDocuments(filter)
+  ]);
+
+  const totalPages = Math.ceil(total / limit) || 0;
+
+  return res.status(HTTP_STATUS.OK).json(
+    new ApiResponse(
+      HTTP_STATUS.OK,
+      {
+        transactions,
+        pagination: {
+          page,
+          limit,
+          total,
+          totalPages,
+          hasNextPage: page < totalPages,
+          hasPrevPage: page > 1
+        }
+      },
+      'User transactions retrieved successfully'
+    )
+  );
+});
+
+/**
+ * 17. Get Single Transaction Details (Logged-in User)
+ * Protected endpoint
+ */
+export const getMyTransactionById = asyncHandler(async (req, res) => {
+  const userId = req.user._id;
+  const { id } = req.params;
+
+  let query = { user: userId };
+  if (mongoose.isValidObjectId(id)) {
+    query._id = id;
+  } else {
+    query.$or = [{ orderId: id }, { orderNumber: id }, { razorpayOrderId: id }];
+  }
+
+  const payment = await Payment.findOne(query).populate('addon', 'name slug type price originalPrice icon');
+
+  if (!payment) {
+    throw new ApiError(HTTP_STATUS.NOT_FOUND, 'Transaction not found');
+  }
+
+  return res.status(HTTP_STATUS.OK).json(
+    new ApiResponse(HTTP_STATUS.OK, payment, 'Transaction details retrieved successfully')
+  );
+});
+
+/**
+ * 18. Admin: Get All Transactions with Filters, Search & Summary Stats
+ * Admin only
+ */
+export const getAllTransactionsAdmin = asyncHandler(async (req, res) => {
+  const page = Math.max(1, parseInt(req.query.page, 10) || 1);
+  const limit = Math.min(100, Math.max(1, parseInt(req.query.limit, 10) || 20));
+  const skip = (page - 1) * limit;
+
+  const { status, type, search, startDate, endDate } = req.query;
+
+  const filter = {};
+
+  if (status && status !== 'all') {
+    const s = status.toLowerCase();
+    if (s === 'paid' || s === 'success') {
+      filter.status = PAYMENT_STATUS.CAPTURED;
+    } else {
+      filter.status = s;
+    }
+  }
+
+  if (type && type !== 'all') {
+    filter.type = type.toLowerCase();
+  }
+
+  if (startDate || endDate) {
+    filter.createdAt = {};
+    if (startDate) {
+      filter.createdAt.$gte = new Date(startDate);
+    }
+    if (endDate) {
+      const end = new Date(endDate);
+      end.setHours(23, 59, 59, 999);
+      filter.createdAt.$lte = end;
+    }
+  }
+
+  if (search && search.trim()) {
+    const s = search.trim();
+    // Search users by fullName, email, or phone
+    const userMatches = await User.find({
+      $or: [
+        { fullName: { $regex: s, $options: 'i' } },
+        { email: { $regex: s, $options: 'i' } },
+        { phoneNumber: { $regex: s, $options: 'i' } }
+      ]
+    }).select('_id');
+
+    const matchingUserIds = userMatches.map((u) => u._id);
+
+    filter.$or = [
+      { orderNumber: { $regex: s, $options: 'i' } },
+      { orderId: { $regex: s, $options: 'i' } },
+      { razorpayOrderId: { $regex: s, $options: 'i' } },
+      { razorpayPaymentId: { $regex: s, $options: 'i' } },
+      { receipt: { $regex: s, $options: 'i' } },
+      ...(matchingUserIds.length > 0 ? [{ user: { $in: matchingUserIds } }] : [])
+    ];
+  }
+
+  const [transactions, total, statsAgg] = await Promise.all([
+    Payment.find(filter)
+      .sort({ createdAt: -1 })
+      .skip(skip)
+      .limit(limit)
+      .populate('user', 'fullName email phoneNumber role')
+      .populate('addon', 'name slug type price originalPrice icon')
+      .lean(),
+    Payment.countDocuments(filter),
+    Payment.aggregate([
+      {
+        $group: {
+          _id: '$status',
+          count: { $sum: 1 },
+          totalAmount: { $sum: '$amount' }
+        }
+      }
+    ])
+  ]);
+
+  const summary = {
+    totalRevenue: 0,
+    totalTransactions: 0,
+    capturedCount: 0,
+    createdCount: 0,
+    failedCount: 0,
+    refundedCount: 0
+  };
+
+  statsAgg.forEach((item) => {
+    summary.totalTransactions += item.count;
+    if (item._id === PAYMENT_STATUS.CAPTURED) {
+      summary.capturedCount = item.count;
+      summary.totalRevenue = item.totalAmount;
+    } else if (item._id === PAYMENT_STATUS.CREATED) {
+      summary.createdCount = item.count;
+    } else if (item._id === PAYMENT_STATUS.FAILED) {
+      summary.failedCount = item.count;
+    } else if (item._id === PAYMENT_STATUS.REFUNDED) {
+      summary.refundedCount = item.count;
+    }
+  });
+
+  const totalPages = Math.ceil(total / limit) || 0;
+
+  return res.status(HTTP_STATUS.OK).json(
+    new ApiResponse(
+      HTTP_STATUS.OK,
+      {
+        transactions,
+        summary,
+        pagination: {
+          page,
+          limit,
+          total,
+          totalPages,
+          hasNextPage: page < totalPages,
+          hasPrevPage: page > 1
+        }
+      },
+      'Admin transactions retrieved successfully'
+    )
+  );
+});
+
+/**
+ * 19. Admin: Get Single Transaction Details by ID
+ * Admin only
+ */
+export const getTransactionByIdAdmin = asyncHandler(async (req, res) => {
+  const { id } = req.params;
+
+  let paymentQuery;
+  if (mongoose.isValidObjectId(id)) {
+    paymentQuery = {
+      $or: [
+        { _id: id },
+        { orderId: id },
+        { razorpayOrderId: id },
+        { razorpayPaymentId: id },
+        { orderNumber: id }
+      ]
+    };
+  } else {
+    paymentQuery = {
+      $or: [
+        { orderId: id },
+        { razorpayOrderId: id },
+        { razorpayPaymentId: id },
+        { orderNumber: id }
+      ]
+    };
+  }
+
+  const payment = await Payment.findOne(paymentQuery)
+    .populate('user', 'fullName email phoneNumber role')
+    .populate('addon', 'name slug type price originalPrice icon');
+
+  if (!payment) {
+    throw new ApiError(HTTP_STATUS.NOT_FOUND, 'Transaction / Payment not found');
+  }
+
+  return res.status(HTTP_STATUS.OK).json(
+    new ApiResponse(HTTP_STATUS.OK, payment, 'Transaction details retrieved successfully')
   );
 });

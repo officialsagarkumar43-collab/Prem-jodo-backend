@@ -6,12 +6,22 @@ import {
   getInterestOptions,
   uploadPhotos,
   reorderPhotos,
-  deletePhoto
+  deletePhoto,
+  createUserAdmin,
+  getAllUsersAdmin,
+  getUserByIdAdmin,
+  updateUserAdmin,
+  deleteUserAdmin
 } from '../controllers/user.controller.js';
 import { getWhoLikedYouFeed, getWhoLikedYouCount } from '../controllers/match.controller.js';
 import { uploadFaceVerification } from '../controllers/auth.controller.js';
-import { verifyJWT } from '../middlewares/auth.middleware.js';
+import { verifyJWT, verifyAdmin } from '../middlewares/auth.middleware.js';
 import { cacheResponse } from '../middlewares/cache.middleware.js';
+import { validate } from '../middlewares/validate.middleware.js';
+import {
+  createUserAdminSchema,
+  updateUserAdminSchema
+} from '../validations/user.validation.js';
 import {
   uploadSingleImage,
   uploadMultipleImages
@@ -52,5 +62,15 @@ router.get('/see-who-like-u', getWhoLikedYouFeed);
 router.get('/see-who-likes-u', getWhoLikedYouFeed);
 router.get('/see-who-liked-you', getWhoLikedYouFeed);
 router.get('/who-liked-you', getWhoLikedYouFeed);
+
+// ==========================================
+// Admin Routes: User Management (Requires verifyAdmin)
+// ==========================================
+
+router.get('/admin/users', verifyAdmin, getAllUsersAdmin);
+router.post('/admin/users', verifyAdmin, validate(createUserAdminSchema), createUserAdmin);
+router.get('/admin/users/:id', verifyAdmin, getUserByIdAdmin);
+router.put('/admin/users/:id', verifyAdmin, validate(updateUserAdminSchema), updateUserAdmin);
+router.delete('/admin/users/:id', verifyAdmin, deleteUserAdmin);
 
 export default router;

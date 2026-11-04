@@ -59,6 +59,18 @@ const paymentSchema = new mongoose.Schema(
       type: Number,
       required: true
     },
+    originalAmount: {
+      type: Number,
+      default: null
+    },
+    discountPercent: {
+      type: Number,
+      default: 0
+    },
+    discountAmount: {
+      type: Number,
+      default: 0
+    },
     currency: {
       type: String,
       default: 'INR'
