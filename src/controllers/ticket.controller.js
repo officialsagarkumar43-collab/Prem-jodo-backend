@@ -664,6 +664,7 @@ export const replyTicketAdmin = asyncHandler(async (req, res) => {
         recipientName: recipientName || 'Member',
         ticketId: ticket.ticketId,
         ticketSubject: getCategoryLabel(ticket.category),
+        userDescription: ticket.description,
         replyMessage: message.trim(),
         status: ticket.status
       }).catch((err) => {
@@ -738,6 +739,7 @@ export const updateTicketStatusAdmin = asyncHandler(async (req, res) => {
         recipientName: recipientName || 'Member',
         ticketId: ticket.ticketId,
         ticketSubject: getCategoryLabel(ticket.category),
+        userDescription: ticket.description,
         replyMessage:
           resolutionNote ||
           `Your support ticket #${ticket.ticketId} has been successfully resolved. If you have any further questions, feel free to reply directly to this email.`,

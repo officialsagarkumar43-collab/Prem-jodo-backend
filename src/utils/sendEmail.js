@@ -200,12 +200,14 @@ export const sendOtpEmail = async (email, otp) => {
 /**
  * Send Support Ticket Reply Email to user / guest candidate
  * Clean plain mail format: pure white background, 12px brand header, no personal admin name.
+ * Highlights Ticket Subject/Category and User's submitted Description.
  */
 export const sendTicketReplyEmail = async ({
   to,
   recipientName,
   ticketId,
   ticketSubject,
+  userDescription,
   replyMessage,
   status = 'In Progress'
 }) => {
@@ -236,7 +238,7 @@ export const sendTicketReplyEmail = async ({
         .support-header {
           font-size: 12px;
           font-weight: 600;
-          color: #666666;
+          color: #777777;
           text-transform: uppercase;
           letter-spacing: 0.5px;
           margin-bottom: 20px;
@@ -247,14 +249,53 @@ export const sendTicketReplyEmail = async ({
           font-size: 15px;
           font-weight: 600;
           color: #111111;
+          margin-bottom: 14px;
+        }
+        .highlight-card {
+          margin: 18px 0;
+          padding: 14px 16px;
+          border-left: 3px solid #ff2d55;
+          background-color: #fbfbfb;
+          border-radius: 4px;
+        }
+        .highlight-label {
+          font-size: 11px;
+          font-weight: 700;
+          color: #888888;
+          text-transform: uppercase;
+          letter-spacing: 0.5px;
+          margin-bottom: 4px;
+        }
+        .subject-val {
+          font-size: 15px;
+          font-weight: 700;
+          color: #111111;
           margin-bottom: 12px;
         }
-        .content-body {
-          font-size: 14px;
-          color: #333333;
+        .desc-text {
+          font-size: 13.5px;
+          color: #444444;
+          line-height: 1.6;
+          white-space: pre-wrap;
+          margin: 0;
+        }
+        .reply-section {
+          margin: 24px 0;
+        }
+        .reply-label {
+          font-size: 11px;
+          font-weight: 700;
+          color: #ff2d55;
+          text-transform: uppercase;
+          letter-spacing: 0.5px;
+          margin-bottom: 8px;
+        }
+        .reply-body {
+          font-size: 14.5px;
+          color: #222222;
           white-space: pre-wrap;
           line-height: 1.7;
-          margin: 16px 0 24px 0;
+          margin: 0;
         }
         .ticket-meta {
           font-size: 13px;
@@ -285,9 +326,30 @@ export const sendTicketReplyEmail = async ({
 
         <div class="greeting">Hello ${recipientName || 'Member'},</div>
 
-        <p style="margin: 0 0 12px 0;">We have an update regarding your support request:</p>
+        <p style="margin: 0 0 14px 0; color: #555555;">
+          Our support team has updated your ticket with a response. Below are the details:
+        </p>
 
-        <div class="content-body">${replyMessage}</div>
+        <!-- Highlighted Topic / Subject & User Description -->
+        <div class="highlight-card">
+          <div class="highlight-label">Topic / Category</div>
+          <div class="subject-val">${ticketSubject || 'General Support'}</div>
+
+          ${
+            userDescription
+              ? `
+            <div class="highlight-label" style="margin-top: 10px;">Your Inquiry / Description</div>
+            <p class="desc-text">${userDescription}</p>
+          `
+              : ''
+          }
+        </div>
+
+        <!-- Support Team Reply -->
+        <div class="reply-section">
+          <div class="reply-label">Response from Prem Jodo Support</div>
+          <p class="reply-body">${replyMessage}</p>
+        </div>
 
         <div class="ticket-meta">
           <strong>Ticket ID:</strong> ${ticketId}<br>
