@@ -6,9 +6,12 @@ import {
     getWhoLikedYouFeed,
     getWhoLikedYouCount,
     unmatchUser,
-    rewindSwipe
+    rewindSwipe,
+    getRecentMatchesAdmin,
+    getMatchByIdAdmin,
+    dissolveMatchAdmin
 } from '../controllers/match.controller.js';
-import { verifyJWT } from '../middlewares/auth.middleware.js';
+import { verifyJWT, verifyAdmin } from '../middlewares/auth.middleware.js';
 
 const router = Router();
 
@@ -28,6 +31,13 @@ router.delete('/unmatch/:id', unmatchUser);
 router.post('/unmatch/:id', unmatchUser);
 router.post('/unmatch', unmatchUser);
 router.delete('/:id', unmatchUser);
+
+// ==========================================
+// Admin Matching Management Routes (Requires verifyAdmin, No Sockets)
+// ==========================================
+router.get('/admin/recent', verifyAdmin, getRecentMatchesAdmin);
+router.get('/admin/matches/:id', verifyAdmin, getMatchByIdAdmin);
+router.delete('/admin/matches/:id', verifyAdmin, dissolveMatchAdmin);
 
 export default router;
 

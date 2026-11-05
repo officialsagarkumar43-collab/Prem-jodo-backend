@@ -98,6 +98,8 @@ export const initializeSocket = (server, clientUrl) => {
       socket.join(strUserId);
       socket.join("user_" + strUserId);
 
+      const wasOffline = !onlineUsers.has(strUserId) || onlineUsers.get(strUserId).size === 0;
+
       if (!onlineUsers.has(strUserId)) {
         onlineUsers.set(strUserId, new Set());
       }
@@ -108,6 +110,10 @@ export const initializeSocket = (server, clientUrl) => {
       io.emit("user_online", { userId: strUserId, status: "online" });
       const cleanUsers = Array.from(onlineUsers.keys()).filter(id => id && id !== "[object Object]");
       socket.emit("online_users", cleanUsers);
+
+      if (wasOffline) {
+        broadcastAdminOnlineCount();
+      }
     };
 
     socket.on("setup", handleUserJoin);
@@ -431,6 +437,19 @@ export const initializeSocket = (server, clientUrl) => {
       if (callerId) { io.to(callerId.toString()).emit("call:busy", { channelName, reason: "busy" }); io.to(callerId.toString()).emit("call:rejected", { channelName, reason: "busy" }); }
     });
 
+    // Admin Dashboard live online/offline tracking
+    socket.on("join_admin_dashboard", async () => {
+      socket.join("admin_dashboard");
+      try {
+        const stats = await getAdminOnlineUserStats();
+        socket.emit("online_count_update", stats);
+      } catch (err) { }
+    });
+
+    socket.on("leave_admin_dashboard", () => {
+      socket.leave("admin_dashboard");
+    });
+
     socket.on("disconnect", async () => {
       for (const [userId, sockets] of onlineUsers.entries()) {
         if (sockets.has(socket.id)) {
@@ -442,6 +461,7 @@ export const initializeSocket = (server, clientUrl) => {
             const isoTime = offlineTime.toISOString();
             io.emit("user_offline", { userId, status: "offline", lastSeen: isoTime, timestamp: isoTime });
             try { User.findByIdAndUpdate(userId, { lastActive: offlineTime }).exec().catch(() => { }); } catch (err) { }
+            broadcastAdminOnlineCount();
           }
         }
       }
@@ -474,4 +494,59 @@ export const emitToRoom = (roomId, event, data) => {
   io.to(strRoom).emit(event, data);
   const clean = parseUserId(strRoom);
   if (clean && clean !== strRoom) io.to(clean).emit(event, data);
+};
+
+/**
+ * Get active online user ObjectIds
+ */
+export const getOnlineUserIds = () => {
+  return Array.from(onlineUsers.keys()).filter(
+    (id) => id && id !== "[object Object]" && mongoose.isValidObjectId(id)
+  );
+};
+
+/**
+ * Get count of active online users
+ */
+export const getOnlineUsersCount = () => {
+  return getOnlineUserIds().length;
+};
+
+/**
+ * Compute real-time online/offline statistics for admin
+ */
+export const getAdminOnlineUserStats = async (roleFilter) => {
+  const onlineIds = getOnlineUserIds();
+  const filter = roleFilter || { role: { $ne: 'owner' } };
+
+  const [totalUsers, onlineCount] = await Promise.all([
+    User.countDocuments(filter).catch(() => 0),
+    User.countDocuments({ ...filter, _id: { $in: onlineIds } }).catch(() => 0)
+  ]);
+
+  const offlineCount = Math.max(0, totalUsers - onlineCount);
+  const onlinePercentage = totalUsers > 0 ? Math.round((onlineCount / totalUsers) * 100) : 0;
+  const offlinePercentage = totalUsers > 0 ? 100 - onlinePercentage : 0;
+
+  return {
+    totalUsers,
+    onlineCount,
+    offlineCount,
+    onlinePercentage,
+    offlinePercentage,
+    timestamp: new Date().toISOString()
+  };
+};
+
+/**
+ * Broadcast real-time online user count update to admin dashboard room
+ */
+export const broadcastAdminOnlineCount = async () => {
+  if (!io) return;
+  try {
+    const stats = await getAdminOnlineUserStats();
+    io.to("admin_dashboard").emit("online_count_update", stats);
+  } catch (err) {
+    console.warn("[Socket] broadcastAdminOnlineCount error:", err.message);
+  }
 };

@@ -2,6 +2,7 @@ import mongoose from 'mongoose';
 import { Profile } from '../models/Profile.js';
 import { User } from '../models/User.js';
 import { Payment } from '../models/Payment.js';
+import { Match } from '../models/Match.js';
 import { ApiError } from '../utils/ApiError.js';
 import { ApiResponse } from '../utils/ApiResponse.js';
 import { asyncHandler } from '../utils/asyncHandler.js';
@@ -819,6 +820,7 @@ export const deleteUserAdmin = asyncHandler(async (req, res) => {
   await Promise.all([
     User.findByIdAndDelete(id),
     Profile.findOneAndDelete({ user: id }),
+    Match.deleteMany({ $or: [{ sender: id }, { receiver: id }] }),
     CacheService.del(`profile:${id}`)
   ]);
 
