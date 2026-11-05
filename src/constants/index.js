@@ -352,3 +352,44 @@ export const DEFAULT_ADDONS_SEED = [
     displayOrder: 4
   }
 ];
+
+export const TICKET_STATUS = {
+  OPEN: 'open',
+  IN_PROGRESS: 'in_progress',
+  RESOLVED: 'resolved',
+  CLOSED: 'closed'
+};
+
+export const TICKET_CATEGORIES = {
+  GENERAL_SUPPORT: 'general_support',
+  SUBSCRIPTIONS_PAYMENTS: 'subscriptions_payments',
+  SAFETY_REPORTING: 'safety_reporting',
+  SELFIE_VERIFICATION: 'selfie_verification'
+};
+
+export const TICKET_CATEGORY_CONFIG = [
+  {
+    key: 'general_support',
+    name: 'General Support',
+    description: 'Account, features & app feedback',
+    icon: 'HelpCircle'
+  },
+  {
+    key: 'subscriptions_payments',
+    name: 'Subscriptions & Payments',
+    description: 'Plus, Gold, Platinum billing & refunds',
+    icon: 'CreditCard'
+  },
+  {
+    key: 'safety_reporting',
+    name: 'Safety & Reporting an Account',
+    description: 'Harassment, fake profiles & safety issues',
+    icon: 'ShieldAlert'
+  },
+  {
+    key: 'selfie_verification',
+    name: 'Selfie Verification Issue',
+    description: 'Blue badge & face scan assistance',
+    icon: 'Camera'
+  }
+];

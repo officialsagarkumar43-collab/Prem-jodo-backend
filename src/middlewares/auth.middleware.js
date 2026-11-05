@@ -36,6 +36,36 @@ export const verifyJWT = asyncHandler(async (req, res, next) => {
   }
 });
 
+/**
+ * Middleware for routes where login is optional:
+ * - If token exists & valid: attaches req.user
+ * - If no token or invalid: sets req.user = null and proceeds without throwing 401
+ */
+export const optionalJWT = asyncHandler(async (req, res, next) => {
+  const token =
+    req.cookies?.accessToken ||
+    req.header('Authorization')?.replace('Bearer ', '');
+
+  if (!token) {
+    req.user = null;
+    return next();
+  }
+
+  try {
+    const isBlacklisted = await CacheService.get(`blacklist_${token}`);
+    if (isBlacklisted) {
+      req.user = null;
+      return next();
+    }
+    const decodedToken = jwt.verify(token, ENV.JWT_ACCESS_SECRET);
+    const user = await User.findById(decodedToken?._id).select('-password -refreshToken -subscription');
+    req.user = user || null;
+  } catch (error) {
+    req.user = null;
+  }
+  next();
+});
+
 // Middleware to verify Administrator or Owner privileges
 export const verifyAdmin = (req, res, next) => {
   const allowedRoles = [USER_ROLES.ADMIN, USER_ROLES.OWNER];

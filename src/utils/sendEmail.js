@@ -196,3 +196,190 @@ export const sendOtpEmail = async (email, otp) => {
     return false;
   }
 };
+
+/**
+ * Send Support Ticket Reply Email to user / guest candidate
+ * Clean plain mail format: pure white background, 12px brand header, no personal admin name.
+ */
+export const sendTicketReplyEmail = async ({
+  to,
+  recipientName,
+  ticketId,
+  ticketSubject,
+  replyMessage,
+  status = 'In Progress'
+}) => {
+  if (!to) return false;
+
+  console.log(`✉️ Sending support ticket reply email to ${to} for ticket [${ticketId}]...`);
+
+  const htmlContent = `
+    <!DOCTYPE html>
+    <html>
+    <head>
+      <meta charset="utf-8">
+      <style>
+        body {
+          font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif;
+          background-color: #ffffff;
+          color: #222222;
+          margin: 0;
+          padding: 20px;
+          font-size: 14px;
+          line-height: 1.6;
+        }
+        .wrapper {
+          max-width: 600px;
+          margin: 0 auto;
+          background-color: #ffffff;
+        }
+        .support-header {
+          font-size: 12px;
+          font-weight: 600;
+          color: #666666;
+          text-transform: uppercase;
+          letter-spacing: 0.5px;
+          margin-bottom: 20px;
+          padding-bottom: 8px;
+          border-bottom: 1px solid #eeeeee;
+        }
+        .greeting {
+          font-size: 15px;
+          font-weight: 600;
+          color: #111111;
+          margin-bottom: 12px;
+        }
+        .content-body {
+          font-size: 14px;
+          color: #333333;
+          white-space: pre-wrap;
+          line-height: 1.7;
+          margin: 16px 0 24px 0;
+        }
+        .ticket-meta {
+          font-size: 13px;
+          color: #666666;
+          margin-top: 24px;
+          padding-top: 14px;
+          border-top: 1px solid #eeeeee;
+        }
+        .signoff {
+          margin-top: 24px;
+          font-size: 14px;
+          color: #333333;
+        }
+        .footer {
+          font-size: 11px;
+          color: #999999;
+          margin-top: 28px;
+          border-top: 1px solid #eeeeee;
+          padding-top: 12px;
+        }
+      </style>
+    </head>
+    <body>
+      <div class="wrapper">
+        <div class="support-header">
+          Prem Jodo Support &bull; Ticket #${ticketId}
+        </div>
+
+        <div class="greeting">Hello ${recipientName || 'Member'},</div>
+
+        <p style="margin: 0 0 12px 0;">We have an update regarding your support request:</p>
+
+        <div class="content-body">${replyMessage}</div>
+
+        <div class="ticket-meta">
+          <strong>Ticket ID:</strong> ${ticketId}<br>
+          <strong>Status:</strong> ${status || 'In Progress'}
+        </div>
+
+        <div class="signoff">
+          Regards,<br>
+          <strong>Prem Jodo Support Team</strong>
+        </div>
+
+        <div class="footer">
+          This is an automated support response from Prem Jodo. If you have any further questions, please reply directly to this email.
+        </div>
+      </div>
+    </body>
+    </html>
+  `;
+
+  const emailSubject = `[${ticketId}] Prem Jodo Support Update`;
+
+  // 1. Brevo REST API
+  if (ENV.BREVO_API_KEY) {
+    try {
+      const cleanApiKey = (ENV.BREVO_API_KEY || '').trim().replace(/^["',]+|["',]+$/g, '');
+      const senderEmail = ENV.SMTP_USER || 'officialsagarkumar43@gmail.com';
+      const response = await fetch('https://api.brevo.com/v3/smtp/email', {
+        method: 'POST',
+        headers: {
+          'api-key': cleanApiKey,
+          'Content-Type': 'application/json',
+          'Accept': 'application/json'
+        },
+        body: JSON.stringify({
+          sender: { name: 'Prem Jodo Support', email: senderEmail },
+          to: [{ email: to, name: recipientName }],
+          subject: emailSubject,
+          htmlContent: htmlContent
+        })
+      });
+      if (response.ok) {
+        console.log(`✉️ Ticket reply email sent to ${to} via Brevo`);
+        return true;
+      }
+    } catch (err) {
+      console.warn('Brevo reply email error:', err.message);
+    }
+  }
+
+  // 2. Resend API
+  if (ENV.RESEND_API_KEY) {
+    try {
+      const response = await fetch('https://api.resend.com/emails', {
+        method: 'POST',
+        headers: {
+          'Authorization': `Bearer ${ENV.RESEND_API_KEY.trim()}`,
+          'Content-Type': 'application/json'
+        },
+        body: JSON.stringify({
+          from: ENV.SMTP_FROM || 'Prem Jodo Support <support@resend.dev>',
+          to: [to],
+          subject: emailSubject,
+          html: htmlContent
+        })
+      });
+      if (response.ok) {
+        console.log(`✉️ Ticket reply email sent to ${to} via Resend`);
+        return true;
+      }
+    } catch (err) {
+      console.warn('Resend reply email error:', err.message);
+    }
+  }
+
+  // 3. Fallback to Nodemailer SMTP
+  const transporter = createTransporter();
+  if (transporter) {
+    try {
+      await transporter.sendMail({
+        from: ENV.SMTP_FROM || `"Prem Jodo Support" <${ENV.SMTP_USER}>`,
+        to: to,
+        subject: emailSubject,
+        html: htmlContent
+      });
+      console.log(`✉️ Ticket reply email sent to ${to} via Nodemailer`);
+      return true;
+    } catch (err) {
+      console.error('Nodemailer reply email error:', err.message);
+      return false;
+    }
+  }
+
+  console.log(`ℹ️ Email logged for ${to} (no SMTP configured). Message: "${replyMessage}"`);
+  return true;
+};
